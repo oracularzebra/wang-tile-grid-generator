@@ -19,9 +19,9 @@ In main change the image name in `load_tiles_from_file_into_atlas` function
 
 
 ## How to run GUI wang tile grid generator
-
-`gcc `pkg-config --cflags gtk+-3.0 gdk-pixbuf-2.0` -o image_resizer making_gui2.c `pkg-config --libs gtk+-3.0 gdk-pixbuf-2.0` -lm`
-
+```
+gcc `pkg-config --cflags gtk+-3.0 gdk-pixbuf-2.0` -o image_resizer making_gui2.c `pkg-config --libs gtk+-3.0 gdk-pixbuf-2.0` -lm
+```
 `./image_resizer`
 
 Select image of an atlas ( the order of tiles in the atlas should be pre defined check reference.png )

@@ -24,8 +24,8 @@
 #define TILESET_WIDTH (TILE_WIDTH_PX*4)
 #define TILESET_HEIGH (TILE_HEIGHT_PX*4)
 
-#define GRID_WIDTH_TL 100
-#define GRID_HEIGHT_TL 100
+#define GRID_WIDTH_TL 300
+#define GRID_HEIGHT_TL 300
 #define GRID_WIDTH_PX (GRID_WIDTH_TL*TILE_WIDTH_PX)
 #define GRID_HEIGHT_PX (GRID_HEIGHT_TL*TILE_HEIGHT_PX)
 
@@ -307,7 +307,7 @@ int main(){
     }
 
     //Saving grid
-    if(!stbi_write_png("grid.png", GRID_WIDTH_PX, GRID_HEIGHT_PX, 4, grid_px, GRID_WIDTH_PX*sizeof(RGBA32))){
+    if(!stbi_write_png("grid300x300.png", GRID_WIDTH_PX, GRID_HEIGHT_PX, 4, grid_px, GRID_WIDTH_PX*sizeof(RGBA32))){
         fprintf(stderr, "Error: Could not save file $s\n ", "grid.png");
         exit(1);
     }
