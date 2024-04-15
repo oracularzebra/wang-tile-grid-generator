@@ -8,6 +8,9 @@ static gdouble scale_factor = 1.0;
 static GtkWidget *global_window = NULL;
 static GtkWidget *global_image = NULL;
 
+static GtkWidget *height_entry;
+static GtkWidget *width_entry;
+
 static void update_image(const char *filename) {
     GdkPixbuf *original_pixbuf = gdk_pixbuf_new_from_file(filename, NULL);
     GdkPixbuf *scaled_pixbuf = gdk_pixbuf_scale_simple(original_pixbuf, 
@@ -31,7 +34,7 @@ static void zoom_out(GtkWidget *widget, gpointer data) {
 
 // Function to create and set an image preview
 void set_image_preview(const char *filename) {
-    GdkPixbuf *pixbuf = gdk_pixbuf_new_from_file_at_scale(filename, 200, 200, TRUE, NULL);
+    GdkPixbuf *pixbuf = gdk_pixbuf_new_from_file_at_scale(filename, 350, 350, TRUE, NULL);
     if (pixbuf) {
         gtk_image_set_from_pixbuf(GTK_IMAGE(image_preview), pixbuf);
         g_object_unref(pixbuf);
@@ -55,6 +58,31 @@ static void update_preview_cb(GtkFileChooser *file_chooser, gpointer data) {
         g_free(filename);
     }
     gtk_file_chooser_set_preview_widget_active(file_chooser, filename != NULL);
+}
+
+static void view_reference_atlas(GtkWidget *widget, gpointer data) {
+    static GtkWidget *atlas_window = NULL;
+    static GtkWidget *atlas_image = NULL;
+
+    if (!atlas_window) {
+        atlas_window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
+        gtk_window_set_title(GTK_WINDOW(atlas_window), "Reference Atlas");
+        gtk_window_set_default_size(GTK_WINDOW(atlas_window), 300, 300);
+        g_signal_connect(atlas_window, "destroy", G_CALLBACK(gtk_widget_destroyed), &atlas_window);
+
+        GtkWidget *scrolled_window = gtk_scrolled_window_new(NULL, NULL);
+        gtk_widget_set_hexpand(scrolled_window, TRUE);
+        gtk_widget_set_vexpand(scrolled_window, TRUE);
+        gtk_container_add(GTK_CONTAINER(atlas_window), scrolled_window);
+
+        atlas_image = gtk_image_new();  // Initialize the image widget
+        gtk_container_add(GTK_CONTAINER(scrolled_window), atlas_image);
+
+        update_image("reference.png"); // Load or update the image with your specific path
+        gtk_image_set_from_file(GTK_IMAGE(atlas_image), "reference.png");
+    }
+
+    gtk_widget_show_all(atlas_window);
 }
 
 // Function to compress and save an image to 256x256 if larger
@@ -128,10 +156,31 @@ static void open_image(GtkWidget *widget, gpointer data) {
     gtk_widget_destroy(dialog);
 }
 
+static void show_info_dialog(GtkWidget *widget, gpointer data) {
+    GtkWidget *dialog = gtk_message_dialog_new(GTK_WINDOW(data),
+                                               GTK_DIALOG_DESTROY_WITH_PARENT,
+                                               GTK_MESSAGE_INFO,
+                                               GTK_BUTTONS_OK,
+                                               "Project Information");
+
+    gtk_message_dialog_format_secondary_text(GTK_MESSAGE_DIALOG(dialog),
+                                             "Wang tiles were first proposed by mathematician, Hao Wang in 1961. A set of square tiles, with each tile edge of a fixed color, are arranged side by side in a rectangular grid. All four edges of each tile must 'match' (have the same color as) their adjoining neighbor. The tiles never overlap and usually all spaces (cells) in the grid are filled. Tiles have a 'fixed orientation', they are never rotated or reflected (turned over). \n\nWith careful tile design, a complete array can produce a large image without visual 'breaks' between tiles. This helps computer game designers create large tiled backgrounds from a small set of tile images. \n\nEdge matching Wang tiles tend to produce path or maze designs. A second type of tile set are corner tiles. These are matched by their corners and tend to produce patch or terrain designs. \nIn this project we're using edge matching to produce path or maze design.");
+    gtk_dialog_run(GTK_DIALOG(dialog));
+    gtk_widget_destroy(dialog);
+}
+
 static void submit_clicked(GtkWidget *widget, gpointer data) {
     g_print("Submit button clicked.\n Generating grid...");
     
-    int grid_generated = generateGrid(20,20);
+    const char *width_str = gtk_entry_get_text(GTK_ENTRY(width_entry));
+    const char *height_str = gtk_entry_get_text(GTK_ENTRY(height_entry));
+    int width = atoi(width_str) | 10;
+    int height = atoi(height_str) | 10;
+
+    if(width <= 0 || height <= 0){
+        return;
+    }
+    int grid_generated = generateGrid(width,height);
     if(grid_generated == 1){
         g_print("Generated grid %d\n", grid_generated);
         if (!global_window) {
@@ -175,28 +224,67 @@ int main(int argc, char **argv) {
     GtkWidget *window;
     GtkWidget *button;
     GtkWidget *submit_button;
+    GtkWidget *view_atlas_button;
     GtkWidget *vbox;
+    GtkWidget *hbox;
+    GtkWidget *button_box;  // Box to contain buttons at the bottom
+    GtkWidget *info_button;
 
     gtk_init(&argc, &argv);
 
     window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
     gtk_window_set_title(GTK_WINDOW(window), "Wang Tile Grid Generator");
-    gtk_window_set_default_size(GTK_WINDOW(window), 300, 400);
+    gtk_window_set_default_size(GTK_WINDOW(window), 400, 400);
     g_signal_connect(window, "destroy", G_CALLBACK(gtk_main_quit), NULL);
 
     vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 5);
     gtk_container_add(GTK_CONTAINER(window), vbox);
 
+    //Image selection
     button = gtk_button_new_with_label("Open Image");
     g_signal_connect(button, "clicked", G_CALLBACK(open_image), window);
     gtk_box_pack_start(GTK_BOX(vbox), button, FALSE, FALSE, 0);
+    
+    // Horizontal box for dimension entries
+    hbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 5);
+    gtk_box_pack_start(GTK_BOX(vbox), hbox, FALSE, FALSE, 0);
+
+    // Width entry
+    width_entry = gtk_entry_new();
+    gtk_entry_set_placeholder_text(GTK_ENTRY(width_entry), "Enter width");
+    gtk_box_pack_start(GTK_BOX(hbox), width_entry, TRUE, TRUE, 5);
+
+    // Height entry
+    height_entry = gtk_entry_new();
+    gtk_entry_set_placeholder_text(GTK_ENTRY(height_entry), "Enter height");
+    gtk_box_pack_start(GTK_BOX(hbox), height_entry, TRUE, TRUE, 5);
 
     image_preview = gtk_image_new(); // Initialize with no image
     gtk_box_pack_start(GTK_BOX(vbox), image_preview, TRUE, TRUE, 0);
+    
+    // Create a horizontal box for buttons at the bottom
+    button_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 10);
+    gtk_box_set_homogeneous(GTK_BOX(button_box), TRUE);
 
     submit_button = gtk_button_new_with_label("Create Wang Grid");
     g_signal_connect(submit_button, "clicked", G_CALLBACK(submit_clicked), NULL);
-    gtk_box_pack_start(GTK_BOX(vbox), submit_button, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(button_box), submit_button, FALSE, FALSE, 0);
+    
+    // Button to view reference atlas
+    view_atlas_button = gtk_button_new_with_label("View Reference Atlas");
+    g_signal_connect(view_atlas_button, "clicked", G_CALLBACK(view_reference_atlas), NULL);
+    gtk_box_pack_start(GTK_BOX(button_box), view_atlas_button, FALSE, FALSE, 0);
+
+    // Info button setup
+    info_button = gtk_button_new_with_label("Info");
+    g_signal_connect(info_button, "clicked", G_CALLBACK(show_info_dialog), window);
+    gtk_box_pack_start(GTK_BOX(button_box), info_button, TRUE, TRUE, 0);
+
+    image_preview = gtk_image_new();
+    gtk_box_pack_start(GTK_BOX(vbox), image_preview, TRUE, TRUE, 0);
+    
+    // Add the button box to the bottom of the main vbox
+    gtk_box_pack_end(GTK_BOX(hbox), button_box, FALSE, FALSE, 0);
 
     gtk_widget_show_all(window);
     gtk_main();
