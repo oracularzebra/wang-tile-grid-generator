@@ -20,6 +20,7 @@ typedef struct {
     size_t nvn;
     size_t nfaces;
     const char *mat;
+    float uv_scale;   // texture coordinates of box faces = world units * uv_scale
 } Obj;
 
 // vn lines are written once up front, in Dir order, so axis-aligned faces refer to them as dir+1.
@@ -155,9 +156,10 @@ static void face(Obj *o, Dir dir, float x0, float x1, float y0, float y1, float 
     }
     if (with_uv) {
         for (int i = 0; i < 4; ++i) {
-            if (dir == DIR_PY || dir == DIR_NY) { uv[i][0] = p[i][0]; uv[i][1] = p[i][2]; }
-            else if (dir == DIR_PX || dir == DIR_NX) { uv[i][0] = p[i][2]; uv[i][1] = p[i][1]; }
-            else { uv[i][0] = p[i][0]; uv[i][1] = p[i][1]; }
+            float k = o->uv_scale;
+            if (dir == DIR_PY || dir == DIR_NY) { uv[i][0] = p[i][0] * k; uv[i][1] = p[i][2] * k; }
+            else if (dir == DIR_PX || dir == DIR_NX) { uv[i][0] = p[i][2] * k; uv[i][1] = p[i][1] * k; }
+            else { uv[i][0] = p[i][0] * k; uv[i][1] = p[i][1] * k; }
         }
     }
     emit(o, p, 4, with_uv ? uv : NULL, (size_t)dir + 1);
@@ -471,12 +473,13 @@ static int write_mtl(const char *mtl_path, const Mesh3dOptions *opt)
     if (opt->wall_texture) {
         write_material(f, "wall", 1, 1, 1, opt->wall_texture, 0, 1);
         write_material(f, "cliff", 0.55f, 0.55f, 0.55f, opt->wall_texture, 0, 1);
-        write_material(f, "ceiling", 0.6f, 0.6f, 0.6f, opt->wall_texture, 0, 1);
     } else {
         write_material(f, "wall", 0.72f, 0.50f, 0.38f, NULL, 0, 1);
         write_material(f, "cliff", 0.35f, 0.30f, 0.25f, NULL, 0, 1);
-        write_material(f, "ceiling", 0.40f, 0.38f, 0.36f, NULL, 0, 1);
     }
+    if (opt->ceiling_texture)    write_material(f, "ceiling", 1, 1, 1, opt->ceiling_texture, 0, 1);
+    else if (opt->wall_texture)  write_material(f, "ceiling", 0.6f, 0.6f, 0.6f, opt->wall_texture, 0, 1);
+    else                         write_material(f, "ceiling", 0.40f, 0.38f, 0.36f, NULL, 0, 1);
 
     if (opt->theme) {
         int glowing = !strcmp(opt->theme->name, "scifi"); // coolant pools glow
@@ -530,7 +533,8 @@ int wang_export_obj(const BLTR *tiles, size_t w, size_t h,
 
     if (write_mtl(mtl_path, &opt) != 0) return -1;
 
-    Obj o = { fopen(obj_path, "w"), 0, 0, NUM_SHARED_NORMALS, 0, NULL };
+    Obj o = { fopen(obj_path, "w"), 0, 0, NUM_SHARED_NORMALS, 0, NULL, 1.0f };
+    const float wall_uv = opt.wall_period > 0.0f ? 1.0f / opt.wall_period : 1.0f;
     if (!o.f) return wang_fail("Could not write '%s'", obj_path);
 
     Grid g = { tiles, w, h, &opt };
@@ -596,8 +600,15 @@ int wang_export_obj(const BLTR *tiles, size_t w, size_t h,
             float x0 = (float)cx, x1 = x0 + 1.0f, z0 = (float)cy, z1 = z0 + 1.0f;
             float y = cell_height(&g, cx, cy);
             float p[4][3] = {{x0,y,z0},{x0,y,z1},{x1,y,z1},{x1,y,z0}};
+            if (opt.floor_period > 0.0f) {
+                // One big seamless image: the texture follows the world position and simply repeats.
+                float k = 1.0f / opt.floor_period;
+                float uv[4][2] = {{x0*k,1-z0*k},{x0*k,1-z1*k},{x1*k,1-z1*k},{x1*k,1-z0*k}};
+                emit(&o, p, 4, uv, DIR_PY + 1);
+                continue;
+            }
             // UV rectangle of this cell's tile in the atlas, inset half a texel to avoid bleeding.
-            BLTR t = tiles[cy * w + cx];
+            BLTR t = (opt.floor_tiles ? opt.floor_tiles : tiles)[cy * w + cx];
             const float inset = 0.5f / (float)WANG_ATLAS_PX, step = 1.0f / (float)WANG_ATLAS_TL;
             float u0 = (float)(t % WANG_ATLAS_TL) * step + inset, u1 = u0 + step - 2.0f * inset;
             float v_top = 1.0f - (float)(t / WANG_ATLAS_TL) * step - inset, v_bot = v_top - step + 2.0f * inset;
@@ -608,6 +619,7 @@ int wang_export_obj(const BLTR *tiles, size_t w, size_t h,
 
     // Terrain: cliff faces wherever a neighbour (or the border) is lower.
     if (opt.terrain) {
+        o.uv_scale = wall_uv;
         usemtl(&o, "cliff");
         for (size_t cy = 0; cy < h; ++cy) {
             for (size_t cx = 0; cx < w; ++cx) {
@@ -688,6 +700,7 @@ int wang_export_obj(const BLTR *tiles, size_t w, size_t h,
     }
 
     // Walls: each shared edge once, shortened to leave room for the corner posts.
+    o.uv_scale = wall_uv;
     usemtl(&o, "wall");
     size_t nwalls = 0, nposts = 0;
     for (size_t j = 0; j <= h; ++j) {
@@ -729,6 +742,7 @@ int wang_export_obj(const BLTR *tiles, size_t w, size_t h,
     // Ceiling: one roof quad flush with the top of the walls, facing down into the maze.
     if (opt.ceiling) {
         float y = max_floor + wall_h;
+        o.uv_scale = opt.ceiling_period > 0.0f ? 1.0f / opt.ceiling_period : wall_uv;
         usemtl(&o, "ceiling");
         face(&o, DIR_NY, -t2, (float)w + t2, y, y, -t2, (float)h + t2, 1);
         info->has_ceiling = 1;

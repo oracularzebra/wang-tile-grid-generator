@@ -12,7 +12,12 @@ typedef struct {
     int terrain;            // lift each cell's floor by 'terrain_step' per set edge bit
     float terrain_step;     // default 0.15
     const char *texture;    // atlas image file name for the floor (mtl map_Kd), or NULL for a flat colour
-    const char *wall_texture; // wall image file name (also used for cliffs and the ceiling), or NULL
+    const char *wall_texture; // wall image file name (also used for cliffs and, by default, the ceiling), or NULL
+    const char *ceiling_texture; // ceiling image file name, or NULL to reuse the wall texture
+    float wall_period;      // > 0: the wall texture repeats every this many world units (default: every 1)
+    float ceiling_period;   // same for the ceiling (0 = like the walls)
+    float floor_period;     // > 0: 'texture' is one big seamless image repeating every this many cells, not an atlas
+    const BLTR *floor_tiles; // per-cell atlas ids for the floor (corner tilesets); NULL = the maze tiles
 
     const Theme *theme;     // NULL = classic look: no props, water or wall lights
     int ceiling;            // add a roof over the whole maze

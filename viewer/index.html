@@ -72,6 +72,7 @@ let mats = {};        // materials from the .mtl by name
 let world = null;     // parsed .json, if present
 let propMaterials = ['stone', 'crate', 'wood', 'leaf', 'cactus', 'rock', 'crystal', 'metal', 'snow', 'glow', 'flame'];
 let goalReached = false;
+let skyMesh = null;   // dome of clouds, when the world has a sky texture
 
 const $ = (id) => document.getElementById(id);
 const modeEl = $('mode'), infoEl = $('info'), goalEl = $('goal'), walkBtn = $('walk');
@@ -117,6 +118,7 @@ function applyWorld(j) {
   document.body.style.background = `linear-gradient(${css(j.sky.top)}, ${css(j.sky.bottom)})`;
   if (j.fog && j.fog.density > 0) scene.fog = new THREE.FogExp2(new THREE.Color(...j.fog.color), j.fog.density);
   if (j.prop_materials) propMaterials = j.prop_materials;
+  if (j.sky_texture) loadSky(objUrl.slice(0, objUrl.lastIndexOf('/') + 1) + j.sky_texture);
   applyLighting();
   $('ceilingRow').hidden = !j.ceiling;
   infoEl.textContent = `${j.theme} · ${j.size.w}×${j.size.h}` +
@@ -152,6 +154,20 @@ function updateNearLights() {
     pl.color.setRGB(L[3], L[4], L[5]);
     pl.intensity = 2.5 * L[6];
   });
+}
+
+// Sky dome from <stem>_sky.png (a seamless texture made from a tileset, e.g. the built-in "clouds").
+function loadSky(url) {
+  new THREE.TextureLoader().load(url, (tex) => {
+    tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.repeat.set(6, 2);
+    const geo = new THREE.SphereGeometry(900, 48, 24, 0, Math.PI * 2, 0, Math.PI / 2); // upper half only
+    const mat = new THREE.MeshBasicMaterial({ map: tex, side: THREE.BackSide, fog: false, depthWrite: false });
+    skyMesh = new THREE.Mesh(geo, mat);
+    skyMesh.renderOrder = -1;
+    scene.add(skyMesh);
+  }, undefined, () => console.warn('Could not load the sky texture', url));
 }
 
 function frame(object) {
@@ -281,6 +297,11 @@ renderer.setAnimationLoop(() => {
 
   if (mode === 'orbit') orbit.update();
   else camera.position.y = EYE;
+
+  if (skyMesh) {
+    skyMesh.position.copy(camera.position);       // the sky stays put relative to the viewer
+    skyMesh.material.map.offset.x += dt * 0.004;  // and the clouds drift
+  }
 
   lightTimer -= dt;
   if (lightTimer <= 0) { updateNearLights(); lightTimer = 0.15; }

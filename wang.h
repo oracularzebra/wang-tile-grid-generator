@@ -36,8 +36,19 @@ int wang_atlas_load(RGBA32 *atlas, const char *path);
 void wang_atlas_generate(RGBA32 *atlas, WangShader shader);
 int wang_atlas_save(const RGBA32 *atlas, const char *path);
 
+// Corner bits of a corner-matched tile (the numbering used on the Stagecast pages).
+#define WANG_CORNER_NE 1
+#define WANG_CORNER_SE 2
+#define WANG_CORNER_SW 4
+#define WANG_CORNER_NW 8
+
 // Fills out[w*h] with edge-matched tile ids. Same seed gives the same grid.
 int wang_generate_grid(size_t w, size_t h, uint32_t seed, BLTR *out);
+// As above; with wrap the grid also matches across its own border, so it repeats seamlessly.
+int wang_generate_grid_ex(size_t w, size_t h, uint32_t seed, int wrap, BLTR *out);
+// Corner-matched tile ids (for patch/terrain/cloud tilesets), optionally wrapping.
+// bias is the share of vertices that get colour 1 (0.5 = an even mix; lower makes sparser patches/clouds).
+int wang_generate_corner_grid(size_t w, size_t h, uint32_t seed, int wrap, float bias, BLTR *out);
 
 // Returns a malloc'd w*h*TILE_PX^2 RGBA image (free() it), or NULL on error.
 RGBA32 *wang_render_grid(const BLTR *tiles, size_t w, size_t h, const RGBA32 *atlas);

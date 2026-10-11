@@ -143,7 +143,9 @@ static BLTR rand_tile(BLTR v, BLTR p, uint32_t *rng)
     return cs[rng_next(rng) % n];
 }
 
-int wang_generate_grid(size_t w, size_t h, uint32_t seed, BLTR *out)
+// With wrap, the grid also matches across its own border (it tiles like a torus). A complete set has every
+// combination of edges, so fixing all four edges of a border tile always leaves exactly one tile that fits.
+int wang_generate_grid_ex(size_t w, size_t h, uint32_t seed, int wrap, BLTR *out)
 {
     if (w == 0 || h == 0 || w > WANG_MAX_GRID_TL || h > WANG_MAX_GRID_TL) {
         snprintf(last_error, sizeof last_error, "Grid size must be 1..%d in each direction", WANG_MAX_GRID_TL);
@@ -151,20 +153,66 @@ int wang_generate_grid(size_t w, size_t h, uint32_t seed, BLTR *out)
     }
     uint32_t rng = seed ? seed : 0x9E3779B9u; // xorshift state must be non-zero
 
+    // Colours of the edges that the grid border shares with the opposite border.
+    BLTR left_edge[WANG_MAX_GRID_TL] = {0}, top_edge[WANG_MAX_GRID_TL] = {0};
+    if (wrap) {
+        for (size_t y = 0; y < h; ++y) left_edge[y] = rng_next(&rng) & 1;
+        for (size_t x = 0; x < w; ++x) top_edge[x] = rng_next(&rng) & 1;
+    }
+
     for (size_t y = 0; y < h; ++y) {
         for (size_t x = 0; x < w; ++x) {
             BLTR v = 0, p = 0;
             if (x > 0) { // left neighbour's right edge must equal our left edge
                 p |= WANG_LEFT;
                 v |= (out[y * w + x - 1] & WANG_RIGHT) << 2;
+            } else if (wrap) {
+                p |= WANG_LEFT;
+                v |= left_edge[y] << 2;
             }
             if (y > 0) { // top neighbour's bottom edge must equal our top edge
                 p |= WANG_TOP;
                 v |= (out[(y - 1) * w + x] & WANG_BOTTOM) >> 2;
+            } else if (wrap) {
+                p |= WANG_TOP;
+                v |= top_edge[x] << 1;
             }
+            if (wrap && x == w - 1) { p |= WANG_RIGHT; v |= left_edge[y] ? WANG_RIGHT : 0; }
+            if (wrap && y == h - 1) { p |= WANG_BOTTOM; v |= top_edge[x] ? WANG_BOTTOM : 0; }
             out[y * w + x] = rand_tile(v, p, &rng);
         }
     }
+    return 0;
+}
+
+int wang_generate_grid(size_t w, size_t h, uint32_t seed, BLTR *out)
+{
+    return wang_generate_grid_ex(w, h, seed, 0, out);
+}
+
+// Corner-matched tiles: give every grid vertex a random colour; a tile's id is the colours of its four corners.
+// Neighbouring tiles then share their corners by construction.
+int wang_generate_corner_grid(size_t w, size_t h, uint32_t seed, int wrap, float bias, BLTR *out)
+{
+    if (w == 0 || h == 0 || w > WANG_MAX_GRID_TL || h > WANG_MAX_GRID_TL) {
+        snprintf(last_error, sizeof last_error, "Grid size must be 1..%d in each direction", WANG_MAX_GRID_TL);
+        return -1;
+    }
+    size_t vw = wrap ? w : w + 1, vh = wrap ? h : h + 1;
+    unsigned char *vert = malloc(vw * vh);
+    if (!vert) { snprintf(last_error, sizeof last_error, "Out of memory"); return -1; }
+    uint32_t rng = (seed ? seed : 0x9E3779B9u) ^ 0xC0FFEE11u;
+    uint32_t cut = (uint32_t)((bias < 0 ? 0 : bias > 1 ? 1 : bias) * 16777216.0f);
+    for (size_t i = 0; i < vw * vh; ++i) vert[i] = (rng_next(&rng) & 0xFFFFFF) < cut;
+
+    for (size_t y = 0; y < h; ++y) {
+        for (size_t x = 0; x < w; ++x) {
+            size_t x1 = wrap ? (x + 1) % w : x + 1, y1 = wrap ? (y + 1) % h : y + 1;
+            BLTR ne = vert[y * vw + x1], se = vert[y1 * vw + x1], sw = vert[y1 * vw + x], nw = vert[y * vw + x];
+            out[y * w + x] = (BLTR)(ne * WANG_CORNER_NE | se * WANG_CORNER_SE | sw * WANG_CORNER_SW | nw * WANG_CORNER_NW);
+        }
+    }
+    free(vert);
     return 0;
 }
 

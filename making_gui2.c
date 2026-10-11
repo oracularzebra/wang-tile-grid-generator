@@ -4,11 +4,12 @@
 #include <time.h>
 #include "wang.h"
 #include "world.h"
+#include "tileset.h"
 
-#define ATLAS_INPUT_FILE "atlas_input.png" // the user's atlas, resized to 256x256
 #define GRID_FILE "grid.png"
 #define GUI_MAX_GRID_TL 128 // keeps the rendered image within WANG_MAX_RENDER_TL tiles
 
+static char *opened_tileset = NULL; // the tileset image chosen with "Open Image" (any size or tile order)
 static BLTR *last_tiles = NULL; // last generated grid, kept for the 3D export
 static size_t last_w = 0, last_h = 0;
 static RGBA32 last_atlas[WANG_ATLAS_PX * WANG_ATLAS_PX];
@@ -112,40 +113,6 @@ static void view_reference_atlas(GtkWidget *widget, gpointer data) {
     gtk_widget_show_all(atlas_window);
 }
 
-// Resizes an image to 256x256 (the 4x4 atlas of 64px tiles) and saves it as a PNG
-gboolean resize_image_to_256(const char *input_filename, const char *output_filename) {
-    GdkPixbuf *src_pixbuf, *dest_pixbuf;
-    GError *error = NULL;
-
-    // Load the original image
-    src_pixbuf = gdk_pixbuf_new_from_file(input_filename, &error);
-    if (!src_pixbuf) {
-        g_print("Error loading image: %s\n", error ? error->message : "unknown error");
-        g_clear_error(&error);
-        return FALSE;
-    }
-
-    // Always resize the image to 256x256
-    dest_pixbuf = gdk_pixbuf_scale_simple(src_pixbuf, 256, 256, GDK_INTERP_BILINEAR);
-    if (!dest_pixbuf) {
-        g_object_unref(src_pixbuf);
-        return FALSE;
-    }
-
-    // Save the resized image
-    gboolean result = gdk_pixbuf_save(dest_pixbuf, output_filename, "png", &error, NULL);
-    if (!result) {
-        g_print("Error saving image: %s\n", error ? error->message : "unknown error");
-        g_clear_error(&error);
-    }
-
-    // Clean up
-    g_object_unref(src_pixbuf);
-    g_object_unref(dest_pixbuf);
-
-    return result;
-}
-
 static void open_image(GtkWidget *widget, gpointer data) {
     GtkWidget *dialog;
     GtkWidget *preview;
@@ -169,18 +136,20 @@ static void open_image(GtkWidget *widget, gpointer data) {
     res = gtk_dialog_run(GTK_DIALOG(dialog));
     if (res == GTK_RESPONSE_ACCEPT) {
         char *filename = gtk_file_chooser_get_filename(GTK_FILE_CHOOSER(dialog));
-        const char *output_filename = ATLAS_INPUT_FILE;
 
-        // Compress and save the image
-        if (resize_image_to_256(filename, output_filename)) {
-            set_image_preview(output_filename); // Update the preview to show the compressed image
+        // Check that it reads as a complete tileset before accepting it.
+        Tileset ts;
+        if (tileset_load(filename, TS_ORDER_AUTO, TS_MATCH_EDGE, &ts) == 0) {
+            tileset_free(&ts);
+            g_free(opened_tileset);
+            opened_tileset = g_strdup(filename);
+            set_image_preview(filename);
         } else {
-            show_error(GTK_WINDOW(data), "Could not read that image.");
+            show_error(GTK_WINDOW(data), wang_last_error());
         }
 
         g_free(filename);
     }
-
     gtk_widget_destroy(dialog);
 }
 
@@ -205,9 +174,17 @@ static const Theme *selected_theme(void) {
     return theme;
 }
 
-// Atlas: the user's opened image if there is one, otherwise the theme's own, otherwise the blobs.
+// Atlas: the user's opened tileset if there is one (its order is worked out from the pixels), otherwise the
+// theme's own, otherwise the blobs. Only edge-matched tilesets can drive the maze here; the command line tool
+// can also use corner-matched ones for floors and textures.
 static int load_atlas(const Theme *theme) {
-    if (g_file_test(ATLAS_INPUT_FILE, G_FILE_TEST_EXISTS)) return wang_atlas_load(last_atlas, ATLAS_INPUT_FILE);
+    if (opened_tileset) {
+        Tileset ts;
+        if (tileset_load(opened_tileset, TS_ORDER_AUTO, TS_MATCH_EDGE, &ts) != 0) return -1;
+        tileset_to_atlas(&ts, last_atlas);
+        tileset_free(&ts);
+        return 0;
+    }
     if (theme) theme_generate_atlas(theme, last_atlas);
     else wang_atlas_generate(last_atlas, WANG_SHADER_BLOBS);
     return 0;

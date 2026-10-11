@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 
 #include "world.h"
 
@@ -10,6 +11,7 @@ WorldOptions world_default_options(void)
     o.mesh = mesh3d_default_options();
     o.markers = -1;
     o.props_pct = o.water_pct = o.wall_light_pct = -1.0f;
+    o.texture_cells = 8;
     return o;
 }
 
@@ -26,13 +28,38 @@ static const char *base_name(const char *path)
     return s ? s + 1 : path;
 }
 
+// A texture spec is the path of a user tileset, or the name of a built-in one.
+int wang_load_texture_spec(const char *spec, const WorldOptions *opt, Tileset *ts)
+{
+    struct stat st;
+    if (stat(spec, &st) == 0) return tileset_load(spec, opt->texture_order, opt->texture_matching, ts);
+    if (tileset_is_builtin(spec)) return tileset_builtin(spec, ts);
+    char msg[256];
+    snprintf(msg, sizeof msg, "Unknown texture '%%s' (built-in: %s; or give the path of a tileset image or folder)",
+             tileset_builtin_names());
+    return wang_fail(msg, spec);
+}
+
+// Builds one seamless texture from a tileset and writes it as a PNG.
+int wang_make_texture(const char *spec, const WorldOptions *opt, uint32_t seed, int cells, const char *path)
+{
+    Tileset ts;
+    if (wang_load_texture_spec(spec, opt, &ts) != 0) return -1;
+    RGBA32 *img = tileset_assemble(&ts, (size_t)cells, (size_t)cells, seed);
+    int rc = -1;
+    if (img) rc = wang_save_image(path, img, (size_t)cells * ts.tile_px, (size_t)cells * ts.tile_px);
+    free(img);
+    tileset_free(&ts);
+    return rc;
+}
+
 static void json_rgb(FILE *f, const float c[3])
 {
     fprintf(f, "[%g, %g, %g]", c[0], c[1], c[2]);
 }
 
 static int write_json(const char *path, const Theme *th, size_t w, size_t h, const WorldOptions *opt,
-                      const Mesh3dInfo *info)
+                      const Mesh3dInfo *info, const char *sky_file)
 {
     // Used when there is no theme (classic look).
     static const float classic_sky[3] = {0.06f, 0.08f, 0.10f};
@@ -47,6 +74,8 @@ static int write_json(const char *path, const Theme *th, size_t w, size_t h, con
     fprintf(f, "},\n  \"fog\": {\"color\": ");
     json_rgb(f, th ? th->fog : classic_sky);
     fprintf(f, ", \"density\": %g},\n", th ? th->fog_density : 0.0f);
+    if (sky_file) fprintf(f, "  \"sky_texture\": \"%s\",\n", sky_file);
+    else          fprintf(f, "  \"sky_texture\": null,\n");
     fprintf(f, "  \"ambient\": %g,\n  \"sun\": %g,\n", th ? th->ambient : 1.0f, th ? th->sun : 1.6f);
     fprintf(f, "  \"terrain\": %s,\n", opt->mesh.terrain ? "true" : "false");
 
@@ -96,24 +125,54 @@ int wang_export_world(const BLTR *tiles, size_t w, size_t h, const RGBA32 *atlas
 
     char *mtl_path = join(stem, ".mtl"), *atlas_path = join(stem, "_atlas.png");
     char *wall_path = join(stem, "_wall.png"), *json_path = join(stem, ".json");
+    char *ceiling_path = join(stem, "_ceiling.png"), *floor_path = join(stem, "_floor.png"), *sky_path = join(stem, "_sky.png");
     int rc = -1;
     RGBA32 *wall_px = NULL;
     Mesh3dInfo info = {0};
-    if (!mtl_path || !atlas_path || !wall_path || !json_path) { wang_fail("Out of memory exporting %s", obj_path); goto done; }
-
-    // The floor samples the atlas, so it works for grids too big to render as one image.
-    if (wang_atlas_save(atlas, atlas_path) != 0) goto done;
+    if (!mtl_path || !atlas_path || !wall_path || !json_path || !ceiling_path || !floor_path || !sky_path) {
+        wang_fail("Out of memory exporting %s", obj_path);
+        goto done;
+    }
+    int cells = opt.texture_cells > 0 ? opt.texture_cells : 8;
+    if (cells > 32) cells = 32;
 
     Mesh3dOptions m = opt.mesh;
     m.theme = th;
-    m.texture = base_name(atlas_path);
     m.wall_texture = NULL;
-    if (th) {
+    m.floor_tiles = opt.floor_tiles;
+
+    // Floor: a texture built from a tileset, or the atlas whose tiles follow the maze paths.
+    if (opt.floor_texture) {
+        if (wang_make_texture(opt.floor_texture, &opt, opt.seed + 11u, cells, floor_path) != 0) goto done;
+        m.texture = base_name(floor_path);
+        m.floor_period = (float)cells;
+    } else {
+        // The floor samples the atlas, so it works for grids too big to render as one image.
+        if (wang_atlas_save(atlas, atlas_path) != 0) goto done;
+        m.texture = base_name(atlas_path);
+    }
+
+    // Walls (and cliffs): a tileset texture, else the theme's own brick/leaf/metal/... texture.
+    if (opt.wall_texture) {
+        if (wang_make_texture(opt.wall_texture, &opt, opt.seed + 23u, cells, wall_path) != 0) goto done;
+        m.wall_texture = base_name(wall_path);
+        m.wall_period = (float)cells;
+    } else if (th) {
         wall_px = malloc(sizeof(RGBA32) * WALL_TEX_PX * WALL_TEX_PX);
         if (!wall_px) { wang_fail("Out of memory exporting %s", obj_path); goto done; }
         theme_generate_wall(th, wall_px);
         if (wang_save_image(wall_path, wall_px, WALL_TEX_PX, WALL_TEX_PX) != 0) goto done;
         m.wall_texture = base_name(wall_path);
+    }
+    if (opt.ceiling_texture) {
+        if (wang_make_texture(opt.ceiling_texture, &opt, opt.seed + 37u, cells, ceiling_path) != 0) goto done;
+        m.ceiling_texture = base_name(ceiling_path);
+        m.ceiling_period = (float)cells;
+    }
+    const char *sky_file = NULL;
+    if (opt.sky_texture) {
+        if (wang_make_texture(opt.sky_texture, &opt, opt.seed + 53u, cells * 2 > 32 ? 32 : cells * 2, sky_path) != 0) goto done;
+        sky_file = base_name(sky_path);
     }
     m.ceiling = opt.ceiling;
     m.markers = opt.markers < 0 ? (th != NULL) : opt.markers;
@@ -123,13 +182,17 @@ int wang_export_world(const BLTR *tiles, size_t w, size_t h, const RGBA32 *atlas
     m.seed = opt.seed;
 
     if (wang_export_obj(tiles, w, h, obj_path, mtl_path, &m, &info) != 0) goto done;
-    if (write_json(json_path, th, w, h, &opt, &info) != 0) goto done;
-    printf("wrote %s, %s, %s%s%s and %s\n", obj_path, mtl_path, atlas_path, th ? ", " : "", th ? wall_path : "", json_path);
+    if (write_json(json_path, th, w, h, &opt, &info, sky_file) != 0) goto done;
+    printf("wrote %s, %s and %s\n", obj_path, mtl_path, json_path);
+    printf("textures: floor %s, walls %s%s%s\n", m.texture, m.wall_texture ? m.wall_texture : "(flat colour)",
+           m.ceiling_texture ? ", ceiling " : "", m.ceiling_texture ? m.ceiling_texture : "");
+    if (sky_file) printf("sky: %s\n", sky_file);
     rc = 0;
 
 done:
     mesh3d_info_free(&info);
     free(wall_px);
     free(stem); free(mtl_path); free(atlas_path); free(wall_path); free(json_path);
+    free(ceiling_path); free(floor_path); free(sky_path);
     return rc;
 }

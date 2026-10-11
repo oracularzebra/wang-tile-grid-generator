@@ -5,6 +5,7 @@
 
 #include "wang.h"
 #include "world.h"
+#include "tileset.h"
 
 static void usage(const char *prog)
 {
@@ -18,6 +19,23 @@ static void usage(const char *prog)
         "  --out FILE          grid image to write (default grid.png)\n"
         "  --atlas-out FILE    also save the atlas that was used\n"
         "  --tiles-out FILE    dump tile ids as hex digits, one grid row per line\n"
+        "Tilesets and textures\n"
+        "  --tileset PATH      your own 16-tile set (sheet image or folder of 16 images, any tile size, any order).\n"
+        "                      The tile order and edge/corner matching are worked out from the pixels.\n"
+        "  --tileset-order O   auto (default), stagecast (edges N=1 E=2 S=4 W=8, corners NE=1 SE=2 SW=4 NW=8)\n"
+        "                      or project (this project's order, as in reference.png)\n"
+        "  --tileset-matching M  auto (default), edge or corner\n"
+        "  --tileset-info      describe how the tileset was read and exit\n"
+        "  --list-textures     list the built-in textures and exit\n"
+        "  --make-tileset S --tileset-out FILE\n"
+        "                      write S (a built-in name or a tileset path) as a standard 4x4 sheet, tile id t at\n"
+        "                      column t%%4, row t/4, and exit: a starting point for your own tiles\n"
+        "  --make-texture S --texture-out FILE\n"
+        "                      build a big seamless texture from S (a built-in name or a tileset path) and exit\n"
+        "  --wall-texture S, --ceiling-texture S, --floor-texture S, --sky-texture S\n"
+        "                      texture the 3D world's surfaces from S (a built-in name or a tileset path);\n"
+        "                      the sky is drawn as clouds by the viewer\n"
+        "  --texture-cells N   tiles per side of these textures (default 8)\n"
         "3D world\n"
         "  --obj FILE          export a 3D world: FILE (.obj), .mtl, _atlas.png, _wall.png and .json\n"
         "  --theme NAME        %s (default classic)\n"
@@ -63,6 +81,8 @@ int main(int argc, char **argv)
     const char *theme_name = "classic";
     WangShader shader = WANG_SHADER_BLOBS;
     int procedural_set = 0;
+    const char *tileset_path = NULL, *make_texture = NULL, *texture_out = NULL, *make_tileset = NULL, *tileset_out = NULL;
+    int tileset_info = 0, list_textures = 0;
     unsigned long w = 10, h = 10, seed = 0;
     int have_seed = 0;
     WorldOptions world = world_default_options();
@@ -74,6 +94,8 @@ int main(int argc, char **argv)
         if (!strcmp(a, "--ceiling")) { world.ceiling = 1; continue; }
         if (!strcmp(a, "--markers")) { world.markers = 1; continue; }
         if (!strcmp(a, "--no-markers")) { world.markers = 0; continue; }
+        if (!strcmp(a, "--tileset-info")) { tileset_info = 1; continue; }
+        if (!strcmp(a, "--list-textures")) { list_textures = 1; continue; }
         if (!strcmp(a, "--help") || !strcmp(a, "-h")) { usage(argv[0]); return 0; }
         if (!val) { fprintf(stderr, "Missing value for %s\n", a); usage(argv[0]); return 2; }
         ++i;
@@ -84,6 +106,32 @@ int main(int argc, char **argv)
             else if (!strcmp(val, "roads")) shader = WANG_SHADER_ROADS;
             else { fprintf(stderr, "Unknown procedural atlas '%s'\n", val); return 2; }
             procedural_set = 1;
+        }
+        else if (!strcmp(a, "--tileset")) tileset_path = val;
+        else if (!strcmp(a, "--tileset-order")) {
+            if (!strcmp(val, "auto")) world.texture_order = TS_ORDER_AUTO;
+            else if (!strcmp(val, "stagecast")) world.texture_order = TS_ORDER_STAGECAST;
+            else if (!strcmp(val, "project")) world.texture_order = TS_ORDER_PROJECT;
+            else { fprintf(stderr, "Unknown --tileset-order '%s' (auto, stagecast or project)\n", val); return 2; }
+        }
+        else if (!strcmp(a, "--tileset-matching")) {
+            if (!strcmp(val, "auto")) world.texture_matching = TS_MATCH_AUTO;
+            else if (!strcmp(val, "edge")) world.texture_matching = TS_MATCH_EDGE;
+            else if (!strcmp(val, "corner")) world.texture_matching = TS_MATCH_CORNER;
+            else { fprintf(stderr, "Unknown --tileset-matching '%s' (auto, edge or corner)\n", val); return 2; }
+        }
+        else if (!strcmp(a, "--make-tileset")) make_tileset = val;
+        else if (!strcmp(a, "--tileset-out")) tileset_out = val;
+        else if (!strcmp(a, "--make-texture")) make_texture = val;
+        else if (!strcmp(a, "--texture-out")) texture_out = val;
+        else if (!strcmp(a, "--wall-texture")) world.wall_texture = val;
+        else if (!strcmp(a, "--ceiling-texture")) world.ceiling_texture = val;
+        else if (!strcmp(a, "--floor-texture")) world.floor_texture = val;
+        else if (!strcmp(a, "--sky-texture")) world.sky_texture = val;
+        else if (!strcmp(a, "--texture-cells")) {
+            unsigned long n;
+            if (parse_uint(val, 32, &n) || n < 1) { fprintf(stderr, "Bad --texture-cells '%s' (1..32)\n", val); return 2; }
+            world.texture_cells = (int)n;
         }
         else if (!strcmp(a, "--theme")) {
             if (!theme_is_known(val)) { fprintf(stderr, "Unknown theme '%s' (choose: %s)\n", val, theme_name_list()); return 2; }
@@ -128,12 +176,75 @@ int main(int argc, char **argv)
     world.seed = (uint32_t)seed;
     world.theme = theme_by_name(theme_name); // NULL for "classic"
 
+    if (list_textures) {
+        printf("Built-in textures (corner-matched Wang tilesets, generated on the fly):\n  %s\n"
+               "Use them with --wall-texture/--floor-texture/--ceiling-texture/--sky-texture/--make-texture,\n"
+               "or give the path of your own tileset instead of a name.\n", tileset_builtin_names());
+        return 0;
+    }
+    if (make_tileset) {
+        if (!tileset_out) { fprintf(stderr, "--make-tileset needs --tileset-out FILE\n"); return 2; }
+        Tileset ts;
+        if (wang_load_texture_spec(make_tileset, &world, &ts)) { fprintf(stderr, "Error: %s\n", wang_last_error()); return 1; }
+        size_t n = (size_t)ts.tile_px;
+        RGBA32 *sheet = malloc(16 * n * n * sizeof *sheet);
+        if (!sheet) { fprintf(stderr, "Out of memory\n"); return 1; }
+        for (size_t id = 0; id < 16; ++id)
+            for (size_t y = 0; y < n; ++y)
+                memcpy(sheet + ((id / 4) * n + y) * 4 * n + (id % 4) * n, ts.px + id * n * n + y * n, n * sizeof *sheet);
+        int bad = wang_save_image(tileset_out, sheet, 4 * n, 4 * n);
+        free(sheet);
+        if (bad) { fprintf(stderr, "Error: %s\n", wang_last_error()); return 1; }
+        printf("wrote %s: '%s' as a 4x4 sheet of %zupx %s-matched tiles\n", tileset_out, ts.name, n,
+               ts.matching == TS_MATCH_EDGE ? "edge" : "corner");
+        tileset_free(&ts);
+        return 0;
+    }
+    if (make_texture) {
+        if (!texture_out) { fprintf(stderr, "--make-texture needs --texture-out FILE\n"); return 2; }
+        int cells = world.texture_cells > 0 ? world.texture_cells : 8;
+        if (wang_make_texture(make_texture, &world, (uint32_t)seed, cells, texture_out)) {
+            fprintf(stderr, "Error: %s\n", wang_last_error());
+            return 1;
+        }
+        printf("seed %lu: wrote %s, a seamless %dx%d-tile texture from '%s'\n", seed, texture_out, cells, cells, make_texture);
+        return 0;
+    }
+
+    // Your own tileset for the floor / 2D grid.
+    Tileset user_ts;
+    int have_user_ts = 0;
+    if (tileset_path) {
+        if (tileset_load(tileset_path, world.texture_order, world.texture_matching, &user_ts)) {
+            fprintf(stderr, "Error: %s\n", wang_last_error());
+            return 1;
+        }
+        have_user_ts = 1;
+        printf("tileset '%s': %s matching, %dpx tiles, %s\n", user_ts.name,
+               user_ts.matching == TS_MATCH_EDGE ? "edge" : "corner", user_ts.tile_px,
+               user_ts.detected ? "order and matching worked out from the pixels" : "order as given");
+        if (user_ts.confidence > 0) printf("  confidence %.1f (tiles that should touch look %.1fx more alike than those that should not)\n",
+                                          user_ts.confidence, user_ts.confidence);
+        if (tileset_info) {
+            printf("source_pos:");
+            for (int id = 0; id < 16; ++id) printf(" %d", user_ts.source_pos[id]);
+            printf("\nmatching: %s\n", user_ts.matching == TS_MATCH_EDGE ? "edge" : "corner");
+            tileset_free(&user_ts);
+            return 0;
+        }
+    } else if (tileset_info) {
+        fprintf(stderr, "--tileset-info needs --tileset PATH\n");
+        return 2;
+    }
+
     RGBA32 *atlas = malloc(sizeof(RGBA32) * WANG_ATLAS_PX * WANG_ATLAS_PX);
     BLTR *tiles = malloc(w * h);
     if (!atlas || !tiles) { fprintf(stderr, "Out of memory\n"); return 1; }
 
-    // Floor atlas: --atlas beats --procedural beats the theme's own atlas.
-    if (atlas_path) {
+    // Floor atlas: --tileset beats --atlas beats --procedural beats the theme's own atlas.
+    if (have_user_ts) {
+        tileset_to_atlas(&user_ts, atlas);
+    } else if (atlas_path) {
         if (wang_atlas_load(atlas, atlas_path)) { fprintf(stderr, "Error: %s\n", wang_last_error()); return 1; }
     } else if (world.theme && !procedural_set) {
         theme_generate_atlas(world.theme, atlas);
@@ -144,6 +255,17 @@ int main(int argc, char **argv)
 
     if (wang_generate_grid(w, h, (uint32_t)seed, tiles)) { fprintf(stderr, "Error: %s\n", wang_last_error()); return 1; }
     printf("seed %lu, grid %lux%lu, theme %s\n", seed, w, h, theme_name);
+
+    // A corner-matched tileset has no say over the maze (that is made of edges): it textures the floor by itself.
+    BLTR *floor_ids = NULL;
+    if (have_user_ts && user_ts.matching == TS_MATCH_CORNER) {
+        floor_ids = malloc(w * h);
+        if (!floor_ids || wang_generate_corner_grid(w, h, (uint32_t)seed, 0, 0.5f, floor_ids)) {
+            fprintf(stderr, "Error: %s\n", floor_ids ? wang_last_error() : "Out of memory");
+            return 1;
+        }
+        world.floor_tiles = floor_ids;
+    }
 
     if (tiles_out) {
         FILE *f = fopen(tiles_out, "w");
@@ -157,7 +279,7 @@ int main(int argc, char **argv)
 
     // The grid image is skipped only when the grid is too big to render but a 3D export was asked for.
     if (w * h <= WANG_MAX_RENDER_TL) {
-        RGBA32 *px = wang_render_grid(tiles, w, h, atlas);
+        RGBA32 *px = wang_render_grid(floor_ids ? floor_ids : tiles, w, h, atlas);
         if (!px || wang_save_image(out_path, px, w * WANG_TILE_PX, h * WANG_TILE_PX)) {
             fprintf(stderr, "Error: %s\n", wang_last_error());
             return 1;
@@ -176,6 +298,8 @@ int main(int argc, char **argv)
         return 1;
     }
 
+    if (have_user_ts) tileset_free(&user_ts);
+    free(floor_ids);
     free(atlas);
     free(tiles);
     return 0;

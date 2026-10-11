@@ -402,6 +402,189 @@ def test_texture_edges(tmp):
         check(lr < 40 and tb < 40, f"{theme}: wall texture tiles without a visible seam (steps {lr:.1f}, {tb:.1f})")
 
 
+# ---------------------------------------------------------------- tilesets and textures
+
+BUILTIN_TEXTURES = ["clouds", "sunset", "grass", "shore", "lava", "snow", "moss", "plaster", "stripes", "damask",
+                    "wood", "marble", "ice"]
+ARRANGED = [12, 13, 8, 9, 15, 14, 11, 10, 0, 1, 4, 5, 3, 2, 7, 6]   # source_pos by id for "arranged" 4x4 sheets
+IDENTITY = list(range(16))
+
+
+def stagecast_edge_to_id(i):
+    return (TOP if i & 1 else 0) | (RIGHT if i & 2 else 0) | (BOTTOM if i & 4 else 0) | (LEFT if i & 8 else 0)
+
+
+def tileset_info(path, *extra):
+    p = run("--tileset", path, "--tileset-info", *extra, ok=False)
+    if p.returncode != 0:
+        return None, p
+    pos = [int(x) for x in next(l for l in p.stdout.splitlines() if l.startswith("source_pos:")).split()[1:]]
+    kind = next(l for l in p.stdout.splitlines() if l.startswith("matching:")).split()[1]
+    return (pos, kind), p
+
+
+def test_builtin_textures(tmp):
+    p = run("--list-textures")
+    check(all(n in p.stdout for n in BUILTIN_TEXTURES), "--list-textures names every built-in texture")
+    try:
+        from PIL import Image
+    except ImportError:
+        print("skip texture seam checks (Pillow not installed)")
+        Image = None
+
+    for name in BUILTIN_TEXTURES:
+        out = os.path.join(tmp, "tex_" + name + ".png")
+        run("--make-texture", name, "--texture-out", out, "--texture-cells", "5", "--seed", "3")
+        if Image is None:
+            continue
+        im = Image.open(out).convert("RGB")
+        check(im.size == (320, 320), f"{name}: 5x5 tiles of 64px give a 320x320 texture")
+
+        def col(x):
+            return [im.getpixel((x, y)) for y in range(320)]
+
+        def row(y):
+            return [im.getpixel((x, y)) for x in range(320)]
+
+        def step(a, b):
+            return sum(sum(abs(p - q) for p, q in zip(u, v)) for u, v in zip(a, b)) / len(a) / 3
+
+        # The step across a tile border (and across the wrap-around) must look like any step inside a tile.
+        inside = [step(col(x), col(x + 1)) for x in range(5, 315) if x % 64 != 63]
+        typical = sum(inside) / len(inside)
+        borders = [step(col(x - 1), col(x)) for x in (64, 128, 192, 256)] + [step(col(319), col(0))]
+        borders += [step(row(y - 1), row(y)) for y in (64, 128, 192, 256)] + [step(row(319), row(0))]
+        mean_border = sum(borders) / len(borders)
+        check(mean_border <= typical * 1.6 + 3,
+              f"{name}: tiles and the wrap-around join smoothly (border step {mean_border:.1f}, typical {typical:.1f})")
+
+
+def test_user_tilesets(tmp):
+    # 1. Numbered folders (Stagecast numbering): the order worked out from the pixels must equal the numbering.
+    for folder in ("groove", "lattice", "maze-1", "maze2", "path-1", "walkway"):
+        path = os.path.join(ROOT, "assets", folder)
+        auto, _ = tileset_info(path)
+        given, _ = tileset_info(path, "--tileset-order", "stagecast")
+        check(auto == given and auto[1] == "edge", f"assets/{folder}: detected order equals the Stagecast numbering")
+
+    # 2. Sheets in this project's order, and the 'arranged' sheets in no particular order.
+    for sheet in ("reference.png", "assets/path-1-small.jpg", "assets/maze-1-small.jpg", "assets/pipes.jpg"):
+        r, _ = tileset_info(os.path.join(ROOT, sheet))
+        check(r is not None and r[0] == IDENTITY, f"{sheet}: recognised as already in this project's order")
+    for sheet in ("border", "brench", "circuit"):
+        r, _ = tileset_info(os.path.join(ROOT, "assets", "tilesets-with-no-predefined-order", sheet + ".png"))
+        check(r is not None and r[0] == ARRANGED, f"{sheet}.png (no predefined order): decoded to the arranged 4x4 layout")
+
+    # 3. Things that are not tilesets are refused instead of producing a scrambled texture.
+    r, p = tileset_info(os.path.join(ROOT, "finalImages", "pipes.png"))
+    check(r is None and "look like" in p.stderr, "an output grid image is rejected as a tileset")
+    r, p = tileset_info(os.path.join(tmp, "nope.png"))
+    check(r is None and "Cannot find" in p.stderr or "Could not load" in p.stderr, "a missing tileset is reported")
+
+    try:
+        from PIL import Image
+    except ImportError:
+        print("skip scrambled-sheet checks (Pillow not installed)")
+        return
+    import random
+
+    def scramble(tiles, n, name, rng):
+        """Lay 16 tile images out in a random order; returns the path and perm (perm[pos] = tile index)."""
+        perm = list(range(16))
+        rng.shuffle(perm)
+        sheet = Image.new("RGB", (4 * n, 4 * n))
+        for pos, t in enumerate(perm):
+            sheet.paste(tiles[t], ((pos % 4) * n, (pos // 4) * n))
+        path = os.path.join(tmp, name)
+        sheet.save(path)
+        return path, perm
+
+    rng = random.Random(7)
+    # 3a. Edge tilesets with known ground truth (the numbered gifs), shuffled and upscaled. Swapping the two edge
+    # colours gives an equally valid set, so the naming can only be checked where the set is not colour-symmetric
+    # (in groove and lattice tile 0 looks like tile 15, so only the structure is checked).
+    def combos(want, masks):
+        return [[want[i ^ m] for i in range(16)] for m in masks]
+
+    for folder, symmetric in (("maze-1", False), ("path-1", False), ("maze2", False), ("walkway", False), ("groove", True)):
+        gifs = [Image.open(os.path.join(ROOT, "assets", folder, f"{i}.gif")).convert("RGB") for i in range(16)]
+        for n in (32, 64):
+            tiles = [g.resize((n, n), Image.NEAREST) for g in gifs]
+            for k in range(2):
+                path, perm = scramble(tiles, n, f"edge_{folder}_{n}_{k}.png", rng)
+                r, _ = tileset_info(path)
+                # id -> position: the tile with file number f has id stagecast_edge_to_id(f) and sits where perm says f
+                want = [perm.index(next(f for f in range(16) if stagecast_edge_to_id(f) == i)) for i in range(16)]
+                ok_orders = combos(want, (0, 15, 5, 10)) if symmetric else [want]
+                check(r is not None and r[0] in ok_orders and r[1] == "edge",
+                      f"scrambled {folder} sheet ({n}px, shuffle {k}): every tile placed correctly"
+                      f"{' (up to colour naming)' if symmetric else ''}")
+
+    # 3b. Corner tileset (built-in), shuffled: ids 0..15 are known because the sheet comes from --make-tileset.
+    for name in ("clouds", "grass", "wood", "lava"):
+        sheet_path = os.path.join(tmp, "sheet_" + name + ".png")
+        run("--make-tileset", name, "--tileset-out", sheet_path)
+        sheet = Image.open(sheet_path).convert("RGB")
+        tiles = [sheet.crop(((t % 4) * 64, (t // 4) * 64, (t % 4) * 64 + 64, (t // 4) * 64 + 64)) for t in range(16)]
+        path, perm = scramble(tiles, 64, "corner_" + name + ".png", rng)
+        r, _ = tileset_info(path)
+        want = [perm.index(i) for i in range(16)]
+        # wood's two woods have the same amount of detail, so only its structure is checked (complement allowed)
+        ok_orders = combos(want, (0, 15)) if name == "wood" else [want]
+        check(r is not None and r[1] == "corner" and r[0] in ok_orders, f"scrambled {name} corner sheet: every tile placed correctly")
+
+    # 3c. JPEG compression noise must not confuse it.
+    sheet = Image.open(os.path.join(tmp, "sheet_grass.png")).convert("RGB")
+    jpg = os.path.join(tmp, "grass_q60.jpg")
+    sheet.save(jpg, quality=60)
+    r, _ = tileset_info(jpg)
+    check(r is not None and r[0] == IDENTITY and r[1] == "corner", "a quality-60 JPEG of a sheet is still read correctly")
+
+
+def test_world_textures(tmp):
+    import json
+    obj = os.path.join(tmp, "tex_world.obj")
+    t = os.path.join(tmp, "tex_world.txt")
+    run("--size", "12x9", "--seed", "4", "--tiles-out", t, "--out", os.path.join(tmp, "tex_world.png"), "--obj", obj,
+        "--theme", "dungeon", "--ceiling", "--wall-texture", "damask", "--floor-texture", "grass",
+        "--ceiling-texture", "marble", "--sky-texture", "clouds", "--texture-cells", "6")
+    mtl = parse_mtl(obj[:-4] + ".mtl")
+    check(mtl["wall"].get("map_Kd") == ["tex_world_wall.png"] and mtl["floor"].get("map_Kd") == ["tex_world_floor.png"] and
+          mtl["ceiling"].get("map_Kd") == ["tex_world_ceiling.png"], "wall, floor and ceiling use the generated textures")
+    j = json.load(open(obj[:-4] + ".json"))
+    check(j["sky_texture"] == "tex_world_sky.png" and os.path.exists(os.path.join(tmp, "tex_world_sky.png")), "the sky texture is written and named in the json")
+    for f in ("wall", "floor", "ceiling", "sky"):
+        check(os.path.exists(os.path.join(tmp, f"tex_world_{f}.png")), f"tex_world_{f}.png written")
+
+    verts, normals, faces, vts = parse_obj(obj)
+    # Textures repeat every 6 cells: wall and floor texture coordinates must run 0..size/6, not 0..size.
+    def uv_range(mat, axis):
+        vals = [vts[i[1] - 1][axis] for m, idx in faces if m == mat for i in idx if i[1]]
+        return min(vals), max(vals)
+
+    umax = uv_range("wall", 0)[1]
+    check(0.9 * 12 / 6 <= umax <= 12.3 / 6, f"wall texture repeats every 6 cells (u up to {umax:.2f})")
+    lo, hi = uv_range("floor", 0)
+    check(lo >= -1e-6 and abs(hi - 12 / 6) < 1e-4, f"floor texture follows world position (u {lo:.2f}..{hi:.2f})")
+    check(uv_range("ceiling", 0)[1] <= 12.3 / 6, "ceiling texture repeats every 6 cells")
+
+    # an unknown texture is refused and lists the choices
+    p = run("--make-texture", "nope", "--texture-out", os.path.join(tmp, "x.png"), ok=False)
+    check(p.returncode == 1 and "clouds" in p.stderr, "an unknown texture name is rejected with the list of built-in ones")
+    check(run("--make-texture", "clouds", ok=False).returncode == 2, "--make-texture needs --texture-out")
+
+    # a user tileset as wall texture, and a corner tileset for the floor
+    sheet = os.path.join(tmp, "my_tiles.png")
+    run("--make-tileset", "lava", "--tileset-out", sheet)
+    obj2 = os.path.join(tmp, "user_world.obj")
+    p = run("--size", "10x8", "--seed", "2", "--out", os.path.join(tmp, "user_world.png"), "--obj", obj2,
+            "--tileset", sheet, "--wall-texture", os.path.join(ROOT, "assets", "maze2"))
+    check("corner matching" in p.stdout, "a corner tileset is recognised as such and used for the floor")
+    verts, normals, faces, vts = parse_obj(obj2)
+    rects = {(round(vts[idx[0][1] - 1][0], 3), round(vts[idx[0][1] - 1][1], 3)) for m, idx in faces if m == "floor"}
+    check(0 < len(rects) <= 16, f"the corner floor uses the tileset's atlas tiles ({len(rects)} distinct)")
+
+
 def test_la():
     exe = os.path.join(tempfile.gettempdir(), "wang_la_test")
     subprocess.run(["gcc", "-Wall", "-Wextra", "-o", exe, os.path.join(ROOT, "tests", "la_test.c"), "-lm"], check=True)
@@ -420,6 +603,9 @@ with tempfile.TemporaryDirectory() as tmp:
     test_themes(tmp)
     test_extras_controls(tmp)
     test_texture_edges(tmp)
+    test_builtin_textures(tmp)
+    test_user_tilesets(tmp)
+    test_world_textures(tmp)
 test_la()
 
 print()
