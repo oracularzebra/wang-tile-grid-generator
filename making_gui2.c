@@ -3,7 +3,7 @@
 #include <string.h>
 #include <time.h>
 #include "wang.h"
-#include "mesh3d.h"
+#include "world.h"
 
 #define ATLAS_INPUT_FILE "atlas_input.png" // the user's atlas, resized to 256x256
 #define GRID_FILE "grid.png"
@@ -12,6 +12,9 @@
 static BLTR *last_tiles = NULL; // last generated grid, kept for the 3D export
 static size_t last_w = 0, last_h = 0;
 static RGBA32 last_atlas[WANG_ATLAS_PX * WANG_ATLAS_PX];
+static uint32_t last_seed = 1;
+static GtkWidget *theme_combo;     // classic, dungeon, hedge, ...
+static GtkWidget *ceiling_check;
 
 static GtkWidget *image_preview; // Widget to display selected image in the main window
 //Code for opening a preivew window for grid image
@@ -194,6 +197,22 @@ static void show_info_dialog(GtkWidget *widget, gpointer data) {
     gtk_widget_destroy(dialog);
 }
 
+// The theme selected in the combo box, or NULL for "classic".
+static const Theme *selected_theme(void) {
+    char *name = gtk_combo_box_text_get_active_text(GTK_COMBO_BOX_TEXT(theme_combo));
+    const Theme *theme = name ? theme_by_name(name) : NULL;
+    g_free(name);
+    return theme;
+}
+
+// Atlas: the user's opened image if there is one, otherwise the theme's own, otherwise the blobs.
+static int load_atlas(const Theme *theme) {
+    if (g_file_test(ATLAS_INPUT_FILE, G_FILE_TEST_EXISTS)) return wang_atlas_load(last_atlas, ATLAS_INPUT_FILE);
+    if (theme) theme_generate_atlas(theme, last_atlas);
+    else wang_atlas_generate(last_atlas, WANG_SHADER_BLOBS);
+    return 0;
+}
+
 // Reads a positive integer from an entry; falls back to 'def' when empty or invalid.
 static size_t entry_size(GtkWidget *entry, size_t def, size_t max) {
     long v = atol(gtk_entry_get_text(GTK_ENTRY(entry)));
@@ -208,14 +227,9 @@ static void submit_clicked(GtkWidget *widget, gpointer data) {
     uint32_t seed = (uint32_t)entry_size(seed_entry, (size_t)time(NULL), 0xFFFFFFFFu);
     g_print("Generating %zux%zu grid (seed %u)...\n", width, height, seed);
 
-    // Use the user's atlas if one was opened, otherwise the built-in procedural one.
-    if (g_file_test(ATLAS_INPUT_FILE, G_FILE_TEST_EXISTS)) {
-        if (wang_atlas_load(last_atlas, ATLAS_INPUT_FILE) != 0) {
-            show_error(parent, wang_last_error());
-            return;
-        }
-    } else {
-        wang_atlas_generate(last_atlas, WANG_SHADER_BLOBS);
+    if (load_atlas(selected_theme()) != 0) {
+        show_error(parent, wang_last_error());
+        return;
     }
 
     BLTR *tiles = malloc(width * height);
@@ -238,6 +252,7 @@ static void submit_clicked(GtkWidget *widget, gpointer data) {
     last_tiles = tiles;
     last_w = width;
     last_h = height;
+    last_seed = seed;
 
     if (!global_window) {
         global_window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
@@ -275,7 +290,7 @@ static void submit_clicked(GtkWidget *widget, gpointer data) {
     gtk_widget_show_all(global_window);
 }
 
-// Writes the last grid as an OBJ plus its atlas texture next to it.
+// Writes the last grid as a 3D world: obj, mtl, textures and a json file for the viewer.
 static void export_3d_clicked(GtkWidget *widget, gpointer data) {
     GtkWindow *parent = GTK_WINDOW(data);
     if (!last_tiles) {
@@ -292,27 +307,19 @@ static void export_3d_clicked(GtkWidget *widget, gpointer data) {
 
     if (gtk_dialog_run(GTK_DIALOG(dialog)) == GTK_RESPONSE_ACCEPT) {
         char *obj_path = gtk_file_chooser_get_filename(GTK_FILE_CHOOSER(dialog));
-        gboolean has_ext = g_str_has_suffix(obj_path, ".obj");
-        char *stem = has_ext ? g_strndup(obj_path, strlen(obj_path) - 4) : g_strdup(obj_path);
-        char *full_obj = has_ext ? g_strdup(obj_path) : g_strconcat(obj_path, ".obj", NULL);
-        char *mtl_path = g_strconcat(stem, ".mtl", NULL);
-        char *tex_path = g_strconcat(stem, "_atlas.png", NULL);
+        char *full_obj = g_str_has_suffix(obj_path, ".obj") ? g_strdup(obj_path) : g_strconcat(obj_path, ".obj", NULL);
 
-        Mesh3dOptions mesh = mesh3d_default_options();
-        char *tex_name = g_path_get_basename(tex_path);
-        mesh.texture = tex_name;
-
-        // The floor samples the atlas, so only the 256x256 atlas has to be saved next to the obj.
-        if (wang_atlas_save(last_atlas, tex_path) != 0 ||
-            wang_export_obj(last_tiles, last_w, last_h, full_obj, mtl_path, &mesh) != 0) {
+        // The theme can have been changed since the grid was made, so pick the atlas again for it.
+        WorldOptions world = world_default_options();
+        world.theme = selected_theme();
+        world.ceiling = gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(ceiling_check));
+        world.seed = last_seed;
+        if (load_atlas(world.theme) != 0 ||
+            wang_export_world(last_tiles, last_w, last_h, last_atlas, full_obj, &world) != 0) {
             show_error(parent, wang_last_error());
         }
 
-        g_free(tex_name);
-        g_free(tex_path);
-        g_free(mtl_path);
         g_free(full_obj);
-        g_free(stem);
         g_free(obj_path);
     }
     gtk_widget_destroy(dialog);
@@ -359,6 +366,19 @@ int main(int argc, char **argv) {
     seed_entry = gtk_entry_new();
     gtk_entry_set_placeholder_text(GTK_ENTRY(seed_entry), "Seed (random)");
     gtk_box_pack_start(GTK_BOX(hbox), seed_entry, TRUE, TRUE, 5);
+
+    // Theme for the 3D export (and for the grid, when no atlas image was opened)
+    GtkWidget *theme_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 5);
+    gtk_box_pack_start(GTK_BOX(vbox), theme_row, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(theme_row), gtk_label_new("Theme:"), FALSE, FALSE, 5);
+    theme_combo = gtk_combo_box_text_new();
+    const char *theme_names[] = {"classic", "dungeon", "hedge", "scifi", "desert", "ice"};
+    for (size_t i = 0; i < G_N_ELEMENTS(theme_names); ++i)
+        gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(theme_combo), theme_names[i]);
+    gtk_combo_box_set_active(GTK_COMBO_BOX(theme_combo), 0);
+    gtk_box_pack_start(GTK_BOX(theme_row), theme_combo, TRUE, TRUE, 5);
+    ceiling_check = gtk_check_button_new_with_label("Ceiling");
+    gtk_box_pack_start(GTK_BOX(theme_row), ceiling_check, FALSE, FALSE, 5);
 
     image_preview = gtk_image_new(); // Shows the atlas that was opened
     gtk_box_pack_start(GTK_BOX(vbox), image_preview, TRUE, TRUE, 0);

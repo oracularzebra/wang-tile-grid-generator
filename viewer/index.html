@@ -7,11 +7,12 @@
 <style>
   html, body { margin: 0; height: 100%; overflow: hidden; background: #10141a; font: 14px system-ui, sans-serif; color: #e6e6e6; }
   canvas { display: block; outline: none; }
-  #hud { position: fixed; top: 10px; left: 10px; background: rgba(16,20,26,.8); padding: 8px 12px; border-radius: 6px; line-height: 1.5; }
-  #hud button { font: inherit; margin-top: 4px; }
+  #hud { position: fixed; top: 10px; left: 10px; background: rgba(16,20,26,.8); padding: 8px 12px; border-radius: 6px; line-height: 1.5; max-width: 320px; }
+  #hud button { font: inherit; margin: 4px 0; }
   #hud label { display: block; cursor: pointer; }
-  #pos { opacity: .6; font-variant-numeric: tabular-nums; }
-  #msg { position: fixed; inset: 0; display: none; place-items: center; text-align: center; padding: 24px; }
+  #info { opacity: .7; font-variant-numeric: tabular-nums; }
+  #goal { color: #ffd54a; }
+  #msg { position: fixed; inset: 0; display: none; place-items: center; text-align: center; padding: 24px; pointer-events: none; }
 </style>
 </head>
 <body>
@@ -20,7 +21,10 @@
   <div>W A S D / arrow keys move in both modes</div>
   <button id="walk">Walk inside the maze</button>
   <label><input type="checkbox" id="walls" checked> Show walls (H)</label>
-  <div id="pos"></div>
+  <label><input type="checkbox" id="props" checked> Show props &amp; lights (P)</label>
+  <label id="ceilingRow" hidden><input type="checkbox" id="ceiling"> Show ceiling in orbit view (C)</label>
+  <div id="goal"></div>
+  <div id="info"></div>
 </div>
 <div id="msg"></div>
 
@@ -36,52 +40,66 @@ import { OBJLoader } from 'three/addons/loaders/OBJLoader.js';
 import { MTLLoader } from 'three/addons/loaders/MTLLoader.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 
-// ?obj=path/to/world.obj (its .mtl is expected next to it), relative to this page.
+// ?obj=path/to/world.obj : the .mtl and the optional .json (sky, fog, lights, start/goal) sit next to it.
 const objUrl = new URLSearchParams(location.search).get('obj') || '../world.obj';
 const mtlUrl = objUrl.replace(/\.obj$/i, '.mtl');
+const jsonUrl = objUrl.replace(/\.obj$/i, '.json');
 
-const renderer = new THREE.WebGLRenderer({ antialias: true });
+const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true }); // alpha: the CSS sky shows through
 renderer.setPixelRatio(devicePixelRatio);
 renderer.setSize(innerWidth, innerHeight);
 renderer.domElement.tabIndex = 0;
 document.body.appendChild(renderer.domElement);
 
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x10141a);
-scene.add(new THREE.HemisphereLight(0xffffff, 0x445533, 1.4));
+const hemi = new THREE.HemisphereLight(0xffffff, 0x445533, 1.4);
 const sun = new THREE.DirectionalLight(0xffffff, 1.6);
 sun.position.set(1, 2, 0.5);
-scene.add(sun);
+scene.add(hemi, sun);
 
 const camera = new THREE.PerspectiveCamera(60, innerWidth / innerHeight, 0.01, 2000);
 const orbit = new OrbitControls(camera, renderer.domElement);
 
 const EYE = 0.3;      // eye height in walk mode; walls default to 0.6
 const WALK_SPEED = 2; // cells per second
+const NEAR_LIGHTS = 8;
 const keys = new Set();
 let mode = 'orbit';   // 'orbit' | 'walk'
 let yaw = 0, pitch = 0;
 let bounds = new THREE.Box3();
 let saved = null;     // orbit camera state to restore when leaving walk mode
-let mazeMaterials = null; // materials from the .mtl, so walls can be hidden to show the floor pattern
+let mats = {};        // materials from the .mtl by name
+let world = null;     // parsed .json, if present
+let propMaterials = ['stone', 'crate', 'wood', 'leaf', 'cactus', 'rock', 'crystal', 'metal', 'snow', 'glow', 'flame'];
+let goalReached = false;
 
-const modeEl = document.getElementById('mode');
-const posEl = document.getElementById('pos');
-const walkBtn = document.getElementById('walk');
-const wallsBox = document.getElementById('walls');
-
-function applyWallVisibility() {
-  if (!mazeMaterials) return;
-  for (const name of ['wall', 'cliff']) {
-    if (mazeMaterials[name]) mazeMaterials[name].visible = wallsBox.checked;
-  }
-}
-wallsBox.addEventListener('change', applyWallVisibility);
+const $ = (id) => document.getElementById(id);
+const modeEl = $('mode'), infoEl = $('info'), goalEl = $('goal'), walkBtn = $('walk');
+const wallsBox = $('walls'), propsBox = $('props'), ceilingBox = $('ceiling');
 
 function showMessage(text) {
-  const m = document.getElementById('msg');
+  const m = $('msg');
   m.textContent = text;
   m.style.display = 'grid';
+}
+
+const css = (c) => `rgb(${c.map((v) => Math.round(v * 255)).join(',')})`;
+
+// ---- visibility toggles (materials, so they work with the single merged mesh) ----
+function applyVisibility() {
+  for (const n of ['wall', 'cliff']) if (mats[n]) mats[n].visible = wallsBox.checked;
+  for (const n of propMaterials) if (mats[n]) mats[n].visible = propsBox.checked;
+  if (mats.ceiling) mats.ceiling.visible = mode === 'walk' || ceilingBox.checked;
+}
+[wallsBox, propsBox, ceilingBox].forEach((b) => b.addEventListener('change', applyVisibility));
+
+// The moody theme settings are tuned for walking; the orbit overview gets light fog and brighter light.
+function applyLighting() {
+  if (!world) return;
+  const walking = mode === 'walk';
+  if (scene.fog) scene.fog.density = world.fog.density * (walking ? 1 : 0.08);
+  hemi.intensity = 1.4 * (walking ? world.ambient : Math.max(world.ambient, 0.9));
+  sun.intensity = walking ? world.sun : Math.max(world.sun, 1.0);
 }
 
 function updateHud() {
@@ -89,8 +107,52 @@ function updateHud() {
     ? 'Walking: drag (or move the mouse once locked) to look, Esc to leave'
     : 'Orbit: drag to rotate, wheel to zoom';
   walkBtn.textContent = mode === 'walk' ? 'Back to orbit view' : 'Walk inside the maze';
+  applyVisibility();
+  applyLighting();
 }
-updateHud();
+
+// ---- theme: sky, fog, ambient and sun from the .json ----
+function applyWorld(j) {
+  world = j;
+  document.body.style.background = `linear-gradient(${css(j.sky.top)}, ${css(j.sky.bottom)})`;
+  if (j.fog && j.fog.density > 0) scene.fog = new THREE.FogExp2(new THREE.Color(...j.fog.color), j.fog.density);
+  if (j.prop_materials) propMaterials = j.prop_materials;
+  applyLighting();
+  $('ceilingRow').hidden = !j.ceiling;
+  infoEl.textContent = `${j.theme} · ${j.size.w}×${j.size.h}` +
+    (j.counts ? ` · ${j.counts.props} props, ${j.counts.water} water, ${j.counts.lights} lights` : '');
+  if (j.goal) goalEl.textContent = `Goal: reach the gold beacon (${j.path_len} steps from the start)`;
+}
+
+// A few real point lights follow the camera and pick the nearest torches/crystals/pylons.
+const lightPool = Array.from({ length: NEAR_LIGHTS }, () => {
+  const l = new THREE.PointLight(0xffffff, 0, 3.5, 2);
+  scene.add(l);
+  return l;
+});
+let lightTimer = 0;
+function updateNearLights() {
+  const ls = world && world.lights;
+  if (!ls || !ls.length) return;
+  const cx = camera.position.x, cz = camera.position.z;
+  const near = [];
+  for (let i = 0; i < ls.length; i++) {
+    const L = ls[i], dx = L[0] - cx, dz = L[2] - cz, d = dx * dx + dz * dz;
+    if (near.length < NEAR_LIGHTS || d < near[near.length - 1].d) {
+      near.push({ i, d });
+      near.sort((a, b) => a.d - b.d);
+      if (near.length > NEAR_LIGHTS) near.pop();
+    }
+  }
+  lightPool.forEach((pl, k) => {
+    const n = near[k];
+    if (!n) { pl.intensity = 0; return; }
+    const L = ls[n.i];
+    pl.position.set(L[0], L[1], L[2]);
+    pl.color.setRGB(L[3], L[4], L[5]);
+    pl.intensity = 2.5 * L[6];
+  });
+}
 
 function frame(object) {
   bounds.setFromObject(object);
@@ -102,18 +164,27 @@ function frame(object) {
   orbit.update();
 }
 
-const mtlLoader = new MTLLoader();
-mtlLoader.load(mtlUrl, (materials) => {
-  materials.preload();
-  for (const m of Object.values(materials.materials)) m.side = THREE.DoubleSide;
-  mazeMaterials = materials.materials;
-  applyWallVisibility();
-  const objLoader = new OBJLoader();
-  objLoader.setMaterials(materials);
-  objLoader.load(objUrl, (object) => { scene.add(object); frame(object); },
-    undefined, () => showMessage(`Could not load ${objUrl}`));
-}, undefined, () => showMessage(`Could not load ${mtlUrl}. Generate one with: ./wang_cli --obj world.obj, then serve the repo root over http (python3 -m http.server).`));
+// Load the optional .json first so the sky is right before the model appears.
+fetch(jsonUrl).then((r) => (r.ok ? r.json() : null)).catch(() => null).then((j) => {
+  if (j) applyWorld(j);
+  new MTLLoader().load(mtlUrl, (materials) => {
+    materials.preload();
+    for (const [name, m] of Object.entries(materials.materials)) {
+      m.side = THREE.DoubleSide;
+      if (['glow', 'flame', 'start', 'goal'].includes(name)) { m.emissive = m.color.clone(); m.emissiveIntensity = 1.0; }
+      if (name === 'crystal') { m.emissive = m.color.clone(); m.emissiveIntensity = 0.35; }
+      if (name === 'water') m.depthWrite = false;
+    }
+    mats = materials.materials;
+    applyVisibility();
+    const objLoader = new OBJLoader();
+    objLoader.setMaterials(materials);
+    objLoader.load(objUrl, (object) => { scene.add(object); frame(object); },
+      undefined, () => showMessage(`Could not load ${objUrl}`));
+  }, undefined, () => showMessage(`Could not load ${mtlUrl}. Generate one with: ./wang_cli --obj world.obj, then serve the repo root over http (python3 -m http.server).`));
+});
 
+// ---- first person ----
 function applyLook() {
   camera.quaternion.setFromEuler(new THREE.Euler(pitch, yaw, 0, 'YXZ'));
 }
@@ -122,9 +193,15 @@ function enterWalk() {
   saved = { pos: camera.position.clone(), target: orbit.target.clone() };
   mode = 'walk';
   orbit.enabled = false;
-  // Start in the first cell, facing into the maze (+z is grid down).
-  camera.position.set(bounds.min.x + 0.5, EYE, bounds.min.z + 0.5);
-  yaw = Math.PI; // camera looks down -z at yaw 0, so turn around
+  goalReached = false;
+  // Start pad if the world has one (facing the goal), otherwise the first cell facing into the maze.
+  if (world && world.start && world.goal) {
+    camera.position.set(world.start.x, EYE, world.start.z);
+    yaw = Math.atan2(-(world.goal.x - world.start.x), -(world.goal.z - world.start.z));
+  } else {
+    camera.position.set(bounds.min.x + 0.5, EYE, bounds.min.z + 0.5);
+    yaw = Math.PI; // the camera looks down -z at yaw 0, so turn towards +z (grid down)
+  }
   pitch = 0;
   applyLook();
   renderer.domElement.focus();
@@ -142,6 +219,8 @@ function leaveWalk() {
   }
   orbit.enabled = true;
   orbit.update();
+  goalEl.style.color = '';
+  if (world && world.goal) goalEl.textContent = `Goal: reach the gold beacon (${world.path_len} steps from the start)`;
   updateHud();
 }
 
@@ -159,9 +238,14 @@ addEventListener('pointermove', (e) => {
   applyLook();
 });
 
+const flip = (box) => { box.checked = !box.checked; applyVisibility(); };
 addEventListener('keydown', (e) => {
   if (e.code === 'Escape' && mode === 'walk') { leaveWalk(); return; }
-  if (e.code === 'KeyH' && !e.repeat) { wallsBox.checked = !wallsBox.checked; applyWallVisibility(); return; }
+  if (!e.repeat) {
+    if (e.code === 'KeyH') { flip(wallsBox); return; }
+    if (e.code === 'KeyP') { flip(propsBox); return; }
+    if (e.code === 'KeyC' && !$('ceilingRow').hidden) { flip(ceilingBox); return; }
+  }
   keys.add(e.code);
 });
 addEventListener('keyup', (e) => keys.delete(e.code));
@@ -198,7 +282,18 @@ renderer.setAnimationLoop(() => {
   if (mode === 'orbit') orbit.update();
   else camera.position.y = EYE;
 
-  posEl.textContent = `x ${camera.position.x.toFixed(1)}  z ${camera.position.z.toFixed(1)}`;
+  lightTimer -= dt;
+  if (lightTimer <= 0) { updateNearLights(); lightTimer = 0.15; }
+
+  let text = `x ${camera.position.x.toFixed(1)}  z ${camera.position.z.toFixed(1)}`;
+  if (mode === 'walk' && world && world.goal) {
+    const d = Math.hypot(camera.position.x - world.goal.x, camera.position.z - world.goal.z);
+    if (d < 0.45 && !goalReached) { goalReached = true; goalEl.textContent = 'You reached the goal!'; goalEl.style.color = '#7dff9a'; }
+    text += `  ·  goal ${d.toFixed(1)} away`;
+  }
+  infoEl.dataset.pos = text;
+  infoEl.textContent = (world ? `${world.theme} · ${world.size.w}×${world.size.h}\n` : '') + text;
+  infoEl.style.whiteSpace = 'pre-line';
   renderer.render(scene, camera);
 });
 </script>

@@ -115,6 +115,27 @@ def cross(a, b):
     return (a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0])
 
 
+def winding_errors(verts, normals, faces):
+    """Faces whose corners are not counter-clockwise around their normal, and faces with bad indices."""
+    bad_winding = bad_ref = 0
+    for _, idx in faces:
+        if any(i[0] > len(verts) or i[2] > len(normals) for i in idx):
+            bad_ref += 1
+            continue
+        vs = [verts[i[0] - 1] for i in idx]
+        n = normals[idx[0][2] - 1]
+        # Newell normal, so n-gons (cylinder caps) are checked as well as triangles and quads
+        nx = ny = nz = 0.0
+        for k in range(len(vs)):
+            a, b = vs[k], vs[(k + 1) % len(vs)]
+            nx += (a[1] - b[1]) * (a[2] + b[2])
+            ny += (a[2] - b[2]) * (a[0] + b[0])
+            nz += (a[0] - b[0]) * (a[1] + b[1])
+        if nx * n[0] + ny * n[1] + nz * n[2] <= 0:
+            bad_winding += 1
+    return bad_winding, bad_ref
+
+
 def expected_walls(g):
     h, w = len(g), len(g[0])
 
@@ -145,17 +166,9 @@ def test_obj(tmp):
         g = read_tiles(t)
         verts, normals, faces, vts = parse_obj(obj)
         check(os.path.exists(os.path.join(tmp, name + ".mtl")), f"{name}: mtl written")
-        check(len(normals) == 5, f"{name}: 5 shared normals")
+        check(len(normals) == 6, f"{name}: 6 shared normals (classic has no per-face normals)")
 
-        bad_winding = bad_ref = 0
-        for _, idx in faces:
-            vs = [verts[i[0] - 1] for i in idx]
-            n = normals[idx[0][2] - 1]
-            c = cross(sub(vs[1], vs[0]), sub(vs[2], vs[0]))
-            if sum(a * b for a, b in zip(c, n)) <= 0:
-                bad_winding += 1
-            if any(i[0] > len(verts) for i in idx):
-                bad_ref += 1
+        bad_winding, bad_ref = winding_errors(verts, normals, faces)
         check(bad_winding == 0 and bad_ref == 0, f"{name}: all faces wind outward with valid indices")
 
         h, w = len(g), len(g[0])
@@ -203,6 +216,192 @@ def test_obj(tmp):
         check(n_top == len(hw) + len(vw) + len(posts), f"{name}: no duplicated wall segments")
 
 
+# ---------------------------------------------------------------- themes and extras
+
+THEMES = ["dungeon", "hedge", "scifi", "desert", "ice"]
+DRY_PROP_MATERIALS = {"stone", "crate", "leaf", "cactus", "rock", "crystal", "metal", "snow"}
+
+
+def parse_mtl(path):
+    mats, cur = {}, None
+    for line in open(path):
+        p = line.split()
+        if not p:
+            continue
+        if p[0] == "newmtl":
+            cur = p[1]
+            mats[cur] = {}
+        elif cur:
+            mats[cur][p[0]] = p[1:]
+    return mats
+
+
+def bfs_dist(g, src):
+    h, w = len(g), len(g[0])
+    dist = {src: 0}
+    queue = [src]
+    for x, y in queue:
+        t = g[y][x]
+        for bit, dx, dy in ((RIGHT, 1, 0), (LEFT, -1, 0), (TOP, 0, -1), (BOTTOM, 0, 1)):
+            nx, ny = x + dx, y + dy
+            if t & bit and 0 <= nx < w and 0 <= ny < h and (nx, ny) not in dist:
+                dist[(nx, ny)] = dist[(x, y)] + 1
+                queue.append((nx, ny))
+    return dist
+
+
+def make_world(tmp, name, *args):
+    obj = os.path.join(tmp, name + ".obj")
+    t = os.path.join(tmp, name + ".txt")
+    run("--size", "20x14", "--tiles-out", t, "--out", os.path.join(tmp, name + ".png"), "--obj", obj, *args)
+    return obj, read_tiles(t)
+
+
+def used_materials(obj):
+    return {line.split()[1] for line in open(obj) if line.startswith("usemtl")}
+
+
+def test_themes(tmp):
+    import json
+    for theme in THEMES:
+        name = "t_" + theme
+        obj, g = make_world(tmp, name, "--seed", "9", "--theme", theme, "--ceiling")
+        h, w = len(g), len(g[0])
+        verts, normals, faces, vts = parse_obj(obj)
+
+        bad_winding, bad_ref = winding_errors(verts, normals, faces)
+        check(bad_winding == 0 and bad_ref == 0, f"{theme}: every face (props, ceiling, water) winds outward")
+
+        mats = parse_mtl(os.path.join(tmp, name + ".mtl"))
+        missing = used_materials(obj) - set(mats)
+        check(not missing, f"{theme}: every material used by the obj is defined ({sorted(missing) or 'ok'})")
+        check(all(os.path.exists(os.path.join(tmp, name + s_)) for s_ in ("_atlas.png", "_wall.png", ".json")),
+              f"{theme}: atlas, wall texture and json written")
+        check(mats["wall"].get("map_Kd") == [name + "_wall.png"] and mats["floor"].get("map_Kd") == [name + "_atlas.png"],
+              f"{theme}: wall and floor are textured")
+
+        j = json.load(open(os.path.join(tmp, name + ".json")))
+        check(j["theme"] == theme and j["size"] == {"w": w, "h": h}, f"{theme}: json describes the world")
+
+        # start/goal: both inside the maze, joined by a route of exactly path_len steps, and the goal is the far end
+        (sx, sy), (gx, gy) = j["start"]["cell"], j["goal"]["cell"]
+        dist = bfs_dist(g, (sx, sy))
+        check((gx, gy) in dist and dist[(gx, gy)] == j["path_len"] > 0 and max(dist.values()) == j["path_len"],
+              f"{theme}: goal is reachable from start, {j['path_len']} steps away, and is the farthest cell")
+
+        check(len(j["lights"]) == j["counts"]["lights"] and
+              all(0 <= l[0] <= w and 0 <= l[2] <= h and 0 < l[1] <= 0.6 * 2 for l in j["lights"]),
+              f"{theme}: {len(j['lights'])} lights, all inside the maze")
+
+        ceil = [f for f in faces if f[0] == "ceiling"]
+        check(len(ceil) == 1 and normals[ceil[0][1][0][2] - 1] == (0, -1, 0) and
+              all(abs(verts[i[0] - 1][1] - 0.6) < 1e-6 for i in ceil[0][1]) and j["ceiling"]["y"] == 0.6,
+              f"{theme}: one downward-facing ceiling flush with the wall tops")
+
+        # props must not stand in water, and the start/goal cells stay clear
+        water = set()
+        for m, idx in faces:
+            if m == "water":
+                x0, _, z0 = verts[idx[0][0] - 1]
+                water.add((int(round(x0)), int(round(z0))))
+        check(len(water) == j["counts"]["water"], f"{theme}: {len(water)} water cells match the json")
+        stray = 0
+        for m, idx in faces:
+            if m in DRY_PROP_MATERIALS:
+                for i in idx:
+                    x, _, z = verts[i[0] - 1]
+                    if (int(x // 1), int(z // 1)) in water | {(sx, sy), (gx, gy)}:
+                        stray += 1
+                        break
+        check(stray == 0, f"{theme}: no props in water or on the start/goal pads")
+
+    # same seed, same world; different seed, different world
+    a, _ = make_world(tmp, "d1", "--seed", "5", "--theme", "dungeon")
+    b, _ = make_world(tmp, "d2", "--seed", "5", "--theme", "dungeon")
+    c, _ = make_world(tmp, "d3", "--seed", "6", "--theme", "dungeon")
+    def body(path):  # the obj names its own .mtl file, which differs between d1/d2/d3
+        return "".join(l for l in open(path) if not l.startswith("mtllib"))
+
+    same = body(a) == body(b) and open(a[:-4] + ".json").read() == open(b[:-4] + ".json").read()
+    check(same, "same seed gives a byte-identical obj and json")
+    check(body(a) != body(c), "different seeds give different worlds")
+
+
+def test_extras_controls(tmp):
+    import json
+    obj, g = make_world(tmp, "bare", "--seed", "3", "--theme", "hedge", "--props", "0", "--water", "0",
+                        "--lights", "0", "--no-markers")
+    used = used_materials(obj)
+    j = json.load(open(obj[:-4] + ".json"))
+    check(not (used & {"water", "start", "goal", "leaf", "wood", "flame", "ceiling"}) and j["counts"]["lights"] == 0
+          and j["start"] is None,
+          "props/water/lights 0 and --no-markers leave a bare maze")
+
+    obj, g = make_world(tmp, "full", "--seed", "3", "--theme", "ice", "--props", "100", "--water", "100")
+    j = json.load(open(obj[:-4] + ".json"))
+    h, w = len(g), len(g[0])
+    check(j["counts"]["water"] == w * h - 2 and j["counts"]["props"] == 0,
+          "--water 100 floods every cell except start/goal, leaving no room for props")
+    obj, g = make_world(tmp, "dry", "--seed", "3", "--theme", "ice", "--props", "100", "--water", "0")
+    j = json.load(open(obj[:-4] + ".json"))
+    check(j["counts"]["props"] == w * h - 2, "--props 100 fills every free cell")
+
+    p = run("--theme", "nope", ok=False)
+    check(p.returncode == 2 and "Unknown theme" in p.stderr, "unknown theme is rejected")
+    check(run("--props", "150", ok=False).returncode == 2, "--props above 100 is rejected")
+
+    # classic stays exactly what it was: no extras, no wall texture
+    obj, g = make_world(tmp, "classic", "--seed", "3")
+    mats = parse_mtl(obj[:-4] + ".mtl")
+    check(used_materials(obj) <= {"floor", "wall"} and "map_Kd" not in mats["wall"],
+          "classic theme adds no props, water or markers and keeps flat walls")
+
+
+def test_texture_edges(tmp):
+    try:
+        from PIL import Image
+    except ImportError:
+        print("skip texture edge checks (Pillow not installed)")
+        return
+    for theme in THEMES:
+        name = "tex_" + theme
+        make_world(tmp, name, "--seed", "2", "--theme", theme)
+
+        # The floor path must depend only on the edge bits: the edge pixels of every tile that has the
+        # same bit on a given side are identical, so any two tiles that touch there continue the same path.
+        atlas = Image.open(os.path.join(tmp, name + "_atlas.png")).convert("RGB")
+
+        def tile(t):
+            return atlas.crop(((t % 4) * 64, (t // 4) * 64, (t % 4) * 64 + 64, (t // 4) * 64 + 64))
+
+        def column(t, side):
+            im = tile(t)
+            return {RIGHT: [im.getpixel((63, y)) for y in range(64)], LEFT: [im.getpixel((0, y)) for y in range(64)],
+                    TOP: [im.getpixel((x, 0)) for x in range(64)], BOTTOM: [im.getpixel((x, 63)) for x in range(64)]}[side]
+
+        bad = 0
+        for side in (RIGHT, LEFT, TOP, BOTTOM):
+            for state in (0, 1):
+                group = [column(t, side) for t in range(16) if bool(t & side) == bool(state)]
+                bad += sum(1 for c in group if c != group[0])
+        check(bad == 0, f"{theme}: floor edges depend only on the edge bits (Wang edge matching)")
+
+        # ... and across an edge the picture continues smoothly: right edge of A next to left edge of B.
+        worst = 0
+        for a in range(16):
+            for b in range(16):
+                if bool(a & RIGHT) == bool(b & LEFT):
+                    ca, cb = column(a, RIGHT), column(b, LEFT)
+                    worst = max(worst, sum(sum(abs(p - q) for p, q in zip(u, v)) for u, v in zip(ca, cb)) / 64 / 3)
+        check(worst < 40, f"{theme}: floor continues across tile edges (worst mean step {worst:.1f}/255)")
+
+        wall = Image.open(os.path.join(tmp, name + "_wall.png")).convert("RGB")
+        n = wall.size[0]
+        lr = sum(sum(abs(p - q) for p, q in zip(wall.getpixel((0, y)), wall.getpixel((n - 1, y)))) for y in range(n)) / n / 3
+        tb = sum(sum(abs(p - q) for p, q in zip(wall.getpixel((x, 0)), wall.getpixel((x, n - 1)))) for x in range(n)) / n / 3
+        check(lr < 40 and tb < 40, f"{theme}: wall texture tiles without a visible seam (steps {lr:.1f}, {tb:.1f})")
+
+
 def test_la():
     exe = os.path.join(tempfile.gettempdir(), "wang_la_test")
     subprocess.run(["gcc", "-Wall", "-Wextra", "-o", exe, os.path.join(ROOT, "tests", "la_test.c"), "-lm"], check=True)
@@ -218,6 +417,9 @@ with tempfile.TemporaryDirectory() as tmp:
     test_atlas(tmp)
     test_obj(tmp)
     test_large(tmp)
+    test_themes(tmp)
+    test_extras_controls(tmp)
+    test_texture_edges(tmp)
 test_la()
 
 print()

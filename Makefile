@@ -4,8 +4,8 @@ WARN    := -Wall -Wextra
 GTK_CFLAGS := $(shell pkg-config --cflags gtk+-3.0 gdk-pixbuf-2.0 2>/dev/null)
 GTK_LIBS   := $(shell pkg-config --libs gtk+-3.0 gdk-pixbuf-2.0 2>/dev/null)
 
-CORE := wang.c mesh3d.c
-DEPS := wang.h mesh3d.h la.c stb_image.h stb_image_write.h
+CORE := wang.c mesh3d.c themes.c world.c
+DEPS := wang.h mesh3d.h themes.h world.h la.c stb_image.h stb_image_write.h
 
 .PHONY: all cli gui test clean
 
