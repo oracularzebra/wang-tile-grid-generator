@@ -56,7 +56,7 @@ Open `world.obj` in Blender, Godot, etc. (keep the `.mtl` and the grid image nex
 python3 -m http.server 8000
 # open http://localhost:8000/viewer/index.html   (loads ../world.obj; or ?obj=path/to/file.obj)
 ```
-Drag to orbit, or press "Walk" for first-person (W A S D + mouse). There is no collision yet.
+Drag to orbit and scroll to zoom. W A S D (or the arrow keys) move in both modes. Press "Walk inside the maze" for first-person: drag to look (or move the mouse if the browser grants pointer lock), Esc to leave. There is no wall collision yet.
 
 This is a 2.5D extrusion of 2D Wang tiles, not true Wang cubes (matching on all six faces of a 3D lattice).
 
