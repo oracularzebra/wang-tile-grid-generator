@@ -18,7 +18,7 @@
 <body>
 <div id="hud">
   <div id="mode"></div>
-  <div>W A S D / arrow keys move in both modes</div>
+  <div>W A S D move &middot; arrow keys look around (like the mouse)</div>
   <button id="walk">Walk inside the maze</button>
   <label><input type="checkbox" id="walls" checked> Show walls (H)</label>
   <label><input type="checkbox" id="props" checked> Show props &amp; lights (P)</label>
@@ -62,6 +62,7 @@ const orbit = new OrbitControls(camera, renderer.domElement);
 
 const EYE = 0.3;      // eye height in walk mode; walls default to 0.6
 const WALK_SPEED = 2; // cells per second
+const LOOK_SPEED = 1.8; // radians per second for the arrow keys
 const NEAR_LIGHTS = 8;
 const keys = new Set();
 let mode = 'orbit';   // 'orbit' | 'walk'
@@ -256,6 +257,7 @@ addEventListener('pointermove', (e) => {
 
 const flip = (box) => { box.checked = !box.checked; applyVisibility(); };
 addEventListener('keydown', (e) => {
+  if (e.code.startsWith('Arrow')) e.preventDefault(); // do not scroll the page
   if (e.code === 'Escape' && mode === 'walk') { leaveWalk(); return; }
   if (!e.repeat) {
     if (e.code === 'KeyH') { flip(wallsBox); return; }
@@ -279,8 +281,27 @@ const clock = new THREE.Clock();
 
 renderer.setAnimationLoop(() => {
   const dt = Math.min(clock.getDelta(), 0.1);
-  const f = (keys.has('KeyW') || keys.has('ArrowUp') ? 1 : 0) - (keys.has('KeyS') || keys.has('ArrowDown') ? 1 : 0);
-  const r = (keys.has('KeyD') || keys.has('ArrowRight') ? 1 : 0) - (keys.has('KeyA') || keys.has('ArrowLeft') ? 1 : 0);
+  const f = (keys.has('KeyW') ? 1 : 0) - (keys.has('KeyS') ? 1 : 0);
+  const r = (keys.has('KeyD') ? 1 : 0) - (keys.has('KeyA') ? 1 : 0);
+  // Arrow keys act as the mouse: the direction you press is the direction you "drag".
+  const lx = (keys.has('ArrowRight') ? 1 : 0) - (keys.has('ArrowLeft') ? 1 : 0);
+  const ly = (keys.has('ArrowDown') ? 1 : 0) - (keys.has('ArrowUp') ? 1 : 0);
+
+  if (lx || ly) {
+    if (mode === 'walk') {
+      yaw -= lx * LOOK_SPEED * dt;
+      pitch = Math.max(-1.4, Math.min(1.4, pitch - ly * LOOK_SPEED * dt));
+      applyLook();
+    } else {
+      // Orbit the camera around its target, like dragging with the mouse.
+      const offset = camera.position.clone().sub(orbit.target);
+      const sph = new THREE.Spherical().setFromVector3(offset);
+      sph.theta -= lx * LOOK_SPEED * dt;
+      sph.phi = Math.max(0.05, Math.min(Math.PI - 0.05, sph.phi - ly * LOOK_SPEED * dt));
+      camera.position.copy(orbit.target).add(new THREE.Vector3().setFromSpherical(sph));
+      camera.lookAt(orbit.target);
+    }
+  }
 
   if (f || r) {
     // Move along the ground plane in the direction the camera faces.
@@ -307,6 +328,7 @@ renderer.setAnimationLoop(() => {
   if (lightTimer <= 0) { updateNearLights(); lightTimer = 0.15; }
 
   let text = `x ${camera.position.x.toFixed(1)}  z ${camera.position.z.toFixed(1)}`;
+  if (mode === 'walk') text += `  ·  facing ${((((-yaw * 180) / Math.PI) % 360) + 360) % 360 | 0}°`;
   if (mode === 'walk' && world && world.goal) {
     const d = Math.hypot(camera.position.x - world.goal.x, camera.position.z - world.goal.z);
     if (d < 0.45 && !goalReached) { goalReached = true; goalEl.textContent = 'You reached the goal!'; goalEl.style.color = '#7dff9a'; }
