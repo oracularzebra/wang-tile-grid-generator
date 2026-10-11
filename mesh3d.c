@@ -122,7 +122,7 @@ static int write_mtl(const char *mtl_path, const Mesh3dOptions *opt)
     fprintf(f, "newmtl floor\n");
     if (opt->texture) fprintf(f, "Kd 1 1 1\nmap_Kd %s\n", opt->texture);
     else fprintf(f, "Kd 0.45 0.55 0.25\n");
-    fprintf(f, "\nnewmtl wall\nKd 0.72 0.50 0.38\n");
+    fprintf(f, "\nnewmtl wall\nKd 0.72 0.50 0.38\n\nnewmtl cliff\nKd 0.35 0.30 0.25\n");
     fclose(f);
     return 0;
 }
@@ -157,7 +157,7 @@ int wang_export_obj(const BLTR *tiles, size_t w, size_t h,
     for (int i = 0; i < 5; ++i)
         fprintf(o.f, "vn %g %g %g\n", NORMALS[i][0], NORMALS[i][1], NORMALS[i][2]);
 
-    // Floor: one textured quad per cell, plus cliff faces where a neighbour is lower.
+    // Floor: one textured quad per cell.
     fprintf(o.f, "usemtl floor\n");
     for (size_t cy = 0; cy < h; ++cy) {
         for (size_t cx = 0; cx < w; ++cx) {
@@ -168,16 +168,25 @@ int wang_export_obj(const BLTR *tiles, size_t w, size_t h,
             float v0 = 1.0f - z0 / (float)h, v1 = 1.0f - z1 / (float)h;
             float uv[4][2] = {{u0,v0},{u0,v1},{u1,v1},{u1,v0}};
             quad(&o, DIR_PY, p, uv);
+        }
+    }
 
-            if (!opt.terrain || y <= 0.0f) continue;
-            float hr = cx + 1 < w ? cell_height(&g, cx + 1, cy) : 0.0f;
-            float hl = cx > 0     ? cell_height(&g, cx - 1, cy) : 0.0f;
-            float hd = cy + 1 < h ? cell_height(&g, cx, cy + 1) : 0.0f;
-            float hu = cy > 0     ? cell_height(&g, cx, cy - 1) : 0.0f;
-            if (hr < y) face(&o, DIR_PX, x0, x1, hr, y, z0, z1);
-            if (hl < y) face(&o, DIR_NX, x0, x1, hl, y, z0, z1);
-            if (hd < y) face(&o, DIR_PZ, x0, x1, hd, y, z0, z1);
-            if (hu < y) face(&o, DIR_NZ, x0, x1, hu, y, z0, z1);
+    // Terrain: untextured cliff faces wherever a neighbour (or the border) is lower.
+    if (opt.terrain) {
+        fprintf(o.f, "usemtl cliff\n");
+        for (size_t cy = 0; cy < h; ++cy) {
+            for (size_t cx = 0; cx < w; ++cx) {
+                float x0 = (float)cx, x1 = x0 + 1.0f, z0 = (float)cy, z1 = z0 + 1.0f;
+                float y = cell_height(&g, cx, cy);
+                float hr = cx + 1 < w ? cell_height(&g, cx + 1, cy) : 0.0f;
+                float hl = cx > 0     ? cell_height(&g, cx - 1, cy) : 0.0f;
+                float hd = cy + 1 < h ? cell_height(&g, cx, cy + 1) : 0.0f;
+                float hu = cy > 0     ? cell_height(&g, cx, cy - 1) : 0.0f;
+                if (hr < y) face(&o, DIR_PX, x0, x1, hr, y, z0, z1);
+                if (hl < y) face(&o, DIR_NX, x0, x1, hl, y, z0, z1);
+                if (hd < y) face(&o, DIR_PZ, x0, x1, hd, y, z0, z1);
+                if (hu < y) face(&o, DIR_NZ, x0, x1, hu, y, z0, z1);
+            }
         }
     }
 

@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Wang World Viewer</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #10141a; font: 14px system-ui, sans-serif; color: #e6e6e6; }
+  canvas { display: block; }
+  #hud { position: fixed; top: 10px; left: 10px; background: rgba(16,20,26,.8); padding: 8px 12px; border-radius: 6px; line-height: 1.5; }
+  #hud button { font: inherit; margin-top: 4px; }
+  #msg { position: fixed; inset: 0; display: none; place-items: center; text-align: center; padding: 24px; }
+</style>
+</head>
+<body>
+<div id="hud">
+  <div id="mode">Orbit: drag to rotate, wheel to zoom</div>
+  <button id="walk">Walk (W A S D, mouse look, Esc to exit)</button>
+</div>
+<div id="msg"></div>
+
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+} }
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { OBJLoader } from 'three/addons/loaders/OBJLoader.js';
+import { MTLLoader } from 'three/addons/loaders/MTLLoader.js';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { PointerLockControls } from 'three/addons/controls/PointerLockControls.js';
+
+// ?obj=path/to/world.obj (its .mtl is expected next to it), relative to this page.
+const objUrl = new URLSearchParams(location.search).get('obj') || '../world.obj';
+const mtlUrl = objUrl.replace(/\.obj$/i, '.mtl');
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(devicePixelRatio);
+renderer.setSize(innerWidth, innerHeight);
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x10141a);
+scene.add(new THREE.HemisphereLight(0xffffff, 0x445533, 1.4));
+const sun = new THREE.DirectionalLight(0xffffff, 1.6);
+sun.position.set(1, 2, 0.5);
+scene.add(sun);
+
+const camera = new THREE.PerspectiveCamera(60, innerWidth / innerHeight, 0.01, 2000);
+const orbit = new OrbitControls(camera, renderer.domElement);
+const walk = new PointerLockControls(camera, renderer.domElement);
+const EYE = 0.3; // eye height; walls default to 0.6
+const keys = new Set();
+
+function showMessage(text) {
+  const m = document.getElementById('msg');
+  m.textContent = text;
+  m.style.display = 'grid';
+}
+
+function frame(object) {
+  const box = new THREE.Box3().setFromObject(object);
+  const size = box.getSize(new THREE.Vector3());
+  const center = box.getCenter(new THREE.Vector3());
+  const span = Math.max(size.x, size.z);
+  camera.position.set(center.x, span * 0.9, center.z + span * 0.7);
+  orbit.target.copy(center);
+  orbit.update();
+}
+
+const mtlLoader = new MTLLoader();
+mtlLoader.load(mtlUrl, (materials) => {
+  materials.preload();
+  for (const m of Object.values(materials.materials)) m.side = THREE.DoubleSide;
+  const objLoader = new OBJLoader();
+  objLoader.setMaterials(materials);
+  objLoader.load(objUrl, (object) => { scene.add(object); frame(object); },
+    undefined, () => showMessage(`Could not load ${objUrl}`));
+}, undefined, () => showMessage(`Could not load ${mtlUrl}. Generate one with: ./wang_cli --obj world.obj, then serve the repo root over http (python3 -m http.server).`));
+
+document.getElementById('walk').addEventListener('click', () => walk.lock());
+walk.addEventListener('lock', () => {
+  orbit.enabled = false;
+  camera.position.y = EYE;
+  document.getElementById('mode').textContent = 'Walking';
+});
+walk.addEventListener('unlock', () => {
+  orbit.enabled = true;
+  document.getElementById('mode').textContent = 'Orbit: drag to rotate, wheel to zoom';
+});
+addEventListener('keydown', (e) => keys.add(e.code));
+addEventListener('keyup', (e) => keys.delete(e.code));
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+
+const clock = new THREE.Clock();
+renderer.setAnimationLoop(() => {
+  const dt = clock.getDelta();
+  if (walk.isLocked) {
+    const speed = 1.5 * dt;
+    if (keys.has('KeyW')) walk.moveForward(speed);
+    if (keys.has('KeyS')) walk.moveForward(-speed);
+    if (keys.has('KeyD')) walk.moveRight(speed);
+    if (keys.has('KeyA')) walk.moveRight(-speed);
+    camera.position.y = EYE;
+  } else {
+    orbit.update();
+  }
+  renderer.render(scene, camera);
+});
+</script>
+</body>
+</html>

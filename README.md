@@ -1,30 +1,64 @@
 # wang tilegrid generator
 
+Generates edge-matched Wang tile grids from a 4x4 tile atlas, and can extrude the
+same grid into a 3D maze/terrain you can walk around in a browser.
+
 ## Requirements
-1. Gtk
-2. C compiler
-3. stb_image_write.h
-4. stb_image.h
+1. A C compiler (gcc/clang) and `make`
+2. GTK 3 + gdk-pixbuf dev packages (GUI only)
+3. `stb_image.h`, `stb_image_write.h` (included)
+4. Python 3 (tests and a local web server for the 3D viewer)
 
-## How to generate wang tile
-
-1. Comment the line load_tiles_from_file_into_atlas (line 239) function.
-2. Uncomment the code between #ifdef THREADED and #else
-
-## How to run CLI wang tile grid generator
-
-In main change the image name in `load_tiles_from_file_into_atlas` function
-
-`gcc -o main main.c -lm`
-
-
-## How to run GUI wang tile grid generator
+## Build
 ```
-gcc `pkg-config --cflags gtk+-3.0 gdk-pixbuf-2.0` -o image_resizer making_gui2.c `pkg-config --libs gtk+-3.0 gdk-pixbuf-2.0` -lm
+make cli     # builds ./wang_cli
+make gui     # builds ./image_resizer (needs GTK 3 and pkg-config)
+make test    # runs the checks in tests/
 ```
-`./image_resizer`
 
-Select image of an atlas ( the order of tiles in the atlas should be pre defined check reference.png )
+## CLI
+```
+./wang_cli --size 20x12 --seed 42 --out grid.png
+./wang_cli --atlas reference.png --size 30x30 --out grid.png
+./wang_cli --procedural roads --size 8x8 --atlas-out atlas.png
+```
+| Option | Meaning |
+| --- | --- |
+| `--atlas FILE` | 256x256 atlas image, 4x4 tiles of 64px in the order shown in `reference.png` |
+| `--procedural blobs\|roads` | generate the atlas instead (default `blobs`) |
+| `--size WxH` | grid size in tiles (default 10x10, at most 1024 per side) |
+| `--seed N` | RNG seed. The same seed gives the same grid. Default is the current time and is printed |
+| `--out FILE` | grid image (default `grid.png`); at most 16384 tiles, e.g. 128x128 |
+| `--tiles-out FILE` | dump tile ids as hex digits, one grid row per line |
+| `--obj FILE` | export a 3D world (see below) |
+
+Tile ids use bits `1=right, 2=top, 4=left, 8=bottom`; neighbouring tiles always carry the same bit on the edge they share.
+
+## GUI
+`./image_resizer`, then open an atlas image (it is resized to 256x256; the tile order must follow
+`reference.png`), set the width, height and an optional seed, and press "Create Wang Grid".
+Leaving the fields empty uses 10x10 and a random seed, and without an opened image a built-in atlas is used.
+"Export 3D (.obj)" writes the last grid as an OBJ plus a floor texture.
+
+## 3D worlds
+The edge bits become a maze: a set bit is an open passage, a clear bit is a wall. Because
+neighbours agree on shared edges, every wall is emitted exactly once and the whole grid is one
+consistent world. The floor is the rendered grid image.
+
+```
+./wang_cli --size 30x20 --seed 5 --out grid.png --obj world.obj
+./wang_cli --size 30x20 --seed 5 --out grid.png --obj world.obj --terrain   # floors rise with open edges
+```
+Extra options: `--wall-height F` (default 0.6) and `--wall-thickness F` (default 0.1), in cell units.
+Open `world.obj` in Blender, Godot, etc. (keep the `.mtl` and the grid image next to it), or view it in the browser:
+
+```
+python3 -m http.server 8000
+# open http://localhost:8000/viewer/index.html   (loads ../world.obj; or ?obj=path/to/file.obj)
+```
+Drag to orbit, or press "Walk" for first-person (W A S D + mouse). There is no collision yet.
+
+This is a 2.5D extrusion of 2D Wang tiles, not true Wang cubes (matching on all six faces of a 3D lattice).
 
 ## Demo
 ### Input Grid
@@ -37,7 +71,5 @@ Select image of an atlas ( the order of tiles in the atlas should be pre defined
 https://web.archive.org/web/20231111191627/http://cr31.co.uk/stagecast/wang/intro.html
 https://tessellation.space/explore/
 
-## Assets 
+## Assets
 https://web.archive.org/web/20231111191627/http://cr31.co.uk/stagecast/wang/intro.html
-
-###### Apologies for bad documentation
