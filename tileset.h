@@ -37,7 +37,8 @@ typedef struct {
 int tileset_load(const char *path, TsOrder order, TsMatching matching, Tileset *out);
 
 // Built-in corner-matched texture sets, generated on the fly (clouds, grass, wallpaper, ...).
-int tileset_builtin(const char *name, Tileset *out);
+int tileset_builtin(const char *name, Tileset *out);                 // 64px tiles
+int tileset_builtin_px(const char *name, int tile_px, Tileset *out); // any tile size, 16..256
 int tileset_is_builtin(const char *name);
 const char *tileset_builtin_names(void); // "clouds, sunset, ..."
 

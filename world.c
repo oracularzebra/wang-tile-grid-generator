@@ -12,6 +12,8 @@ WorldOptions world_default_options(void)
     o.markers = -1;
     o.props_pct = o.water_pct = o.wall_light_pct = -1.0f;
     o.texture_cells = 8;
+    o.texture_px = 0; // 0 = automatic
+    o.relief = -1.0f;
     return o;
 }
 
@@ -33,24 +35,94 @@ int wang_load_texture_spec(const char *spec, const WorldOptions *opt, Tileset *t
 {
     struct stat st;
     if (stat(spec, &st) == 0) return tileset_load(spec, opt->texture_order, opt->texture_matching, ts);
-    if (tileset_is_builtin(spec)) return tileset_builtin(spec, ts);
+    if (tileset_is_builtin(spec)) return tileset_builtin_px(spec, opt->texture_px > 0 ? opt->texture_px : WANG_TILE_PX, ts);
     char msg[256];
     snprintf(msg, sizeof msg, "Unknown texture '%%s' (built-in: %s; or give the path of a tileset image or folder)",
              tileset_builtin_names());
     return wang_fail(msg, spec);
 }
 
-// Builds one seamless texture from a tileset and writes it as a PNG.
-int wang_make_texture(const char *spec, const WorldOptions *opt, uint32_t seed, int cells, const char *path)
+// Seamless relief map from brightness: blur a little (wrapping around, so it still tiles), then stretch the
+// contrast so that the darkest 2% become black and the brightest 2% white.
+int wang_make_bump(const RGBA32 *img, int w, int h, const char *path)
+{
+    size_t n = (size_t)w * h;
+    float *lum = malloc(n * sizeof *lum), *blur = malloc(n * sizeof *blur), *sorted = malloc(n * sizeof *sorted);
+    RGBA32 *out = malloc(n * sizeof *out);
+    int rc = -1;
+    if (!lum || !blur || !sorted || !out) { wang_fail("Out of memory making the relief map for %s", path); goto done; }
+    for (size_t i = 0; i < n; ++i) {
+        RGBA32 p = img[i];
+        lum[i] = 0.3f * (float)(p & 255) + 0.6f * (float)((p >> 8) & 255) + 0.1f * (float)((p >> 16) & 255);
+    }
+    for (int y = 0; y < h; ++y) {
+        for (int x = 0; x < w; ++x) {
+            float sum = 0;
+            for (int dy = -1; dy <= 1; ++dy)
+                for (int dx = -1; dx <= 1; ++dx)
+                    sum += lum[(size_t)((y + dy + h) % h) * w + (size_t)((x + dx + w) % w)];
+            blur[(size_t)y * w + x] = sum / 9.0f;
+        }
+    }
+    memcpy(sorted, blur, n * sizeof *sorted);
+    // percentiles by selection of a coarse histogram (values are 0..255)
+    {
+        size_t hist[256] = {0}, acc = 0;
+        for (size_t i = 0; i < n; ++i) { int b = (int)blur[i]; hist[b < 0 ? 0 : b > 255 ? 255 : b]++; }
+        int lo = 0, hi = 255;
+        for (int b = 0; b < 256; ++b) { acc += hist[b]; if (acc >= n / 50) { lo = b; break; } }
+        acc = 0;
+        for (int b = 255; b >= 0; --b) { acc += hist[b]; if (acc >= n / 50) { hi = b; break; } }
+        if (hi <= lo) hi = lo + 1;
+        for (size_t i = 0; i < n; ++i) {
+            float t = (blur[i] - (float)lo) / (float)(hi - lo);
+            unsigned v = (unsigned)((t < 0 ? 0 : t > 1 ? 1 : t) * 255.0f + 0.5f);
+            out[i] = v | (v << 8) | (v << 16) | 0xFF000000u;
+        }
+    }
+    rc = wang_save_image(path, out, (size_t)w, (size_t)h);
+done:
+    free(lum); free(blur); free(sorted); free(out);
+    return rc;
+}
+
+// Builds one seamless texture from a tileset. Returns a malloc'd image of *w x *h pixels, or NULL.
+static RGBA32 *build_surface(const char *spec, const WorldOptions *opt, uint32_t seed, int cells, int *w, int *h)
 {
     Tileset ts;
-    if (wang_load_texture_spec(spec, opt, &ts) != 0) return -1;
+    if (wang_load_texture_spec(spec, opt, &ts) != 0) return NULL;
     RGBA32 *img = tileset_assemble(&ts, (size_t)cells, (size_t)cells, seed);
-    int rc = -1;
-    if (img) rc = wang_save_image(path, img, (size_t)cells * ts.tile_px, (size_t)cells * ts.tile_px);
-    free(img);
+    *w = cells * ts.tile_px;
+    *h = cells * ts.tile_px;
     tileset_free(&ts);
+    return img;
+}
+
+// Builds one seamless texture from a tileset and writes it as a PNG (and, if bump_path is given, its relief map).
+static int make_surface_files(const char *spec, const WorldOptions *opt, uint32_t seed, int cells, const char *path,
+                              const char *bump_path)
+{
+    int w, h;
+    RGBA32 *img = build_surface(spec, opt, seed, cells, &w, &h);
+    if (!img) return -1;
+    int rc = wang_save_image(path, img, (size_t)w, (size_t)h);
+    if (rc == 0 && bump_path) rc = wang_make_bump(img, w, h, bump_path);
+    free(img);
     return rc;
+}
+
+int wang_make_texture(const char *spec, const WorldOptions *opt, uint32_t seed, int cells, const char *path)
+{
+    return make_surface_files(spec, opt, seed, cells, path, NULL);
+}
+
+// How deep the wall relief should be when --relief is not given: carved stone and cave rock always get it,
+// the brick and sandstone themes a little.
+static float auto_relief(const char *wall_spec, const Theme *th)
+{
+    if (wall_spec) return (!strcmp(wall_spec, "cave") || !strcmp(wall_spec, "stone")) ? 1.0f : 0.0f;
+    if (th && (!strcmp(th->name, "dungeon") || !strcmp(th->name, "desert"))) return 0.6f;
+    return 0.0f;
 }
 
 static void json_rgb(FILE *f, const float c[3])
@@ -135,10 +207,11 @@ int wang_export_world(const BLTR *tiles, size_t w, size_t h, const RGBA32 *atlas
     char *mtl_path = join(stem, ".mtl"), *atlas_path = join(stem, "_atlas.png");
     char *wall_path = join(stem, "_wall.png"), *json_path = join(stem, ".json");
     char *ceiling_path = join(stem, "_ceiling.png"), *floor_path = join(stem, "_floor.png"), *sky_path = join(stem, "_sky.png");
+    char *bump_path = join(stem, "_wall_bump.png");
     int rc = -1;
     RGBA32 *wall_px = NULL;
     Mesh3dInfo info = {0};
-    if (!mtl_path || !atlas_path || !wall_path || !json_path || !ceiling_path || !floor_path || !sky_path) {
+    if (!mtl_path || !atlas_path || !wall_path || !json_path || !ceiling_path || !floor_path || !sky_path || !bump_path) {
         wang_fail("Out of memory exporting %s", obj_path);
         goto done;
     }
@@ -152,7 +225,7 @@ int wang_export_world(const BLTR *tiles, size_t w, size_t h, const RGBA32 *atlas
 
     // Floor: a texture built from a tileset, or the atlas whose tiles follow the maze paths.
     if (opt.floor_texture) {
-        if (wang_make_texture(opt.floor_texture, &opt, opt.seed + 11u, cells, floor_path) != 0) goto done;
+        if (make_surface_files(opt.floor_texture, &opt, opt.seed + 11u, cells, floor_path, NULL) != 0) goto done;
         m.texture = base_name(floor_path);
         m.floor_period = (float)cells;
     } else {
@@ -162,8 +235,11 @@ int wang_export_world(const BLTR *tiles, size_t w, size_t h, const RGBA32 *atlas
     }
 
     // Walls (and cliffs): a tileset texture, else the theme's own brick/leaf/metal/... texture.
+    float relief = opt.relief >= 0 ? opt.relief : auto_relief(opt.wall_texture, th);
     if (opt.wall_texture) {
-        if (wang_make_texture(opt.wall_texture, &opt, opt.seed + 23u, cells, wall_path) != 0) goto done;
+        WorldOptions wall_opt = opt;
+        if (wall_opt.texture_px <= 0) wall_opt.texture_px = 128; // walls are seen up close
+        if (make_surface_files(opt.wall_texture, &wall_opt, opt.seed + 23u, cells, wall_path, relief > 0 ? bump_path : NULL) != 0) goto done;
         m.wall_texture = base_name(wall_path);
         m.wall_period = (float)cells;
     } else if (th) {
@@ -171,16 +247,21 @@ int wang_export_world(const BLTR *tiles, size_t w, size_t h, const RGBA32 *atlas
         if (!wall_px) { wang_fail("Out of memory exporting %s", obj_path); goto done; }
         theme_generate_wall(th, wall_px);
         if (wang_save_image(wall_path, wall_px, WALL_TEX_PX, WALL_TEX_PX) != 0) goto done;
+        if (relief > 0 && wang_make_bump(wall_px, WALL_TEX_PX, WALL_TEX_PX, bump_path) != 0) goto done;
         m.wall_texture = base_name(wall_path);
     }
+    if (m.wall_texture && relief > 0) {
+        m.wall_bump = base_name(bump_path);
+        m.bump_strength = relief;
+    }
     if (opt.ceiling_texture) {
-        if (wang_make_texture(opt.ceiling_texture, &opt, opt.seed + 37u, cells, ceiling_path) != 0) goto done;
+        if (make_surface_files(opt.ceiling_texture, &opt, opt.seed + 37u, cells, ceiling_path, NULL) != 0) goto done;
         m.ceiling_texture = base_name(ceiling_path);
         m.ceiling_period = (float)cells;
     }
     const char *sky_file = NULL;
     if (opt.sky_texture) {
-        if (wang_make_texture(opt.sky_texture, &opt, opt.seed + 53u, cells * 2 > 32 ? 32 : cells * 2, sky_path) != 0) goto done;
+        if (make_surface_files(opt.sky_texture, &opt, opt.seed + 53u, cells * 2 > 32 ? 32 : cells * 2, sky_path, NULL) != 0) goto done;
         sky_file = base_name(sky_path);
     }
     m.ceiling = opt.ceiling;
@@ -202,6 +283,6 @@ done:
     mesh3d_info_free(&info);
     free(wall_px);
     free(stem); free(mtl_path); free(atlas_path); free(wall_path); free(json_path);
-    free(ceiling_path); free(floor_path); free(sky_path);
+    free(ceiling_path); free(floor_path); free(sky_path); free(bump_path);
     return rc;
 }

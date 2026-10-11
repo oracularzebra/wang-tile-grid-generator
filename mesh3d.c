@@ -452,14 +452,21 @@ static void emit_wall_light(Obj *o, WallLight kind, int side, float cx, float cz
 
 // ---------------------------------------------------------------- materials
 
-static void write_material(FILE *f, const char *name, float r, float g, float b, const char *map,
-                           float emit_scale, float alpha)
+static void write_material_ex(FILE *f, const char *name, float r, float g, float b, const char *map,
+                              float emit_scale, float alpha, const char *bump, float bump_strength)
 {
     fprintf(f, "newmtl %s\nKd %g %g %g\n", name, r, g, b);
     if (map) fprintf(f, "map_Kd %s\n", map);
+    if (bump) fprintf(f, "map_Bump -bm %g %s\n", bump_strength, bump);
     if (emit_scale > 0.0f) fprintf(f, "Ke %g %g %g\n", r * emit_scale, g * emit_scale, b * emit_scale);
     if (alpha < 1.0f) fprintf(f, "d %g\n", alpha);
     fprintf(f, "\n");
+}
+
+static void write_material(FILE *f, const char *name, float r, float g, float b, const char *map,
+                           float emit_scale, float alpha)
+{
+    write_material_ex(f, name, r, g, b, map, emit_scale, alpha, NULL, 0);
 }
 
 static int write_mtl(const char *mtl_path, const Mesh3dOptions *opt)
@@ -471,8 +478,8 @@ static int write_mtl(const char *mtl_path, const Mesh3dOptions *opt)
     else              write_material(f, "floor", 0.45f, 0.55f, 0.25f, NULL, 0, 1);
 
     if (opt->wall_texture) {
-        write_material(f, "wall", 1, 1, 1, opt->wall_texture, 0, 1);
-        write_material(f, "cliff", 0.55f, 0.55f, 0.55f, opt->wall_texture, 0, 1);
+        write_material_ex(f, "wall", 1, 1, 1, opt->wall_texture, 0, 1, opt->wall_bump, opt->bump_strength > 0 ? opt->bump_strength : 1);
+        write_material_ex(f, "cliff", 0.55f, 0.55f, 0.55f, opt->wall_texture, 0, 1, opt->wall_bump, opt->bump_strength > 0 ? opt->bump_strength : 1);
     } else {
         write_material(f, "wall", 0.72f, 0.50f, 0.38f, NULL, 0, 1);
         write_material(f, "cliff", 0.35f, 0.30f, 0.25f, NULL, 0, 1);

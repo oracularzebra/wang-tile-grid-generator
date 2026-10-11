@@ -794,6 +794,59 @@ static C3 mat_glacier(float u, float v)
     return mixc(c, c3(0.88f, 0.96f, 1.0f), crack * 0.8f);
 }
 
+// ---- cave and carved stone: the grooves are dark so that the relief map made from the picture reads as depth ----
+
+static C3 rough_rock(float u, float v, uint32_t s)
+{
+    C3 c = mulc(c3(0.46f, 0.42f, 0.38f), 0.62f + 0.8f * fbm(u, v, 6, 5, s));
+    float crack = 1.0f - smoothstepf(0.0f, 0.025f, fabsf(fbm(u, v, 5, 4, s + 1) - 0.5f));
+    c = mulc(c, 1.0f - 0.7f * crack);                                  // deep fissures
+    if (vnoise2(u, v, 24, 24, s + 2) > 0.86f) c = mulc(c, 0.55f);      // pits
+    return c;
+}
+
+// Carved relief: each quarter of the tile holds one engraving made of grooves cut into the surface.
+static float carving(float u, float v, uint32_t s)
+{
+    float cu = fractf(u * 2.0f) - 0.5f, cv = fractf(v * 2.0f) - 0.5f;       // position inside a 2x2 cell
+    int kind = (int)(rnd01((int)floorf(u * 2.0f) & 1, (int)floorf(v * 2.0f) & 1, s) * 3.0f);
+    float d;
+    switch (kind) {
+    case 0:  d = fmaxf(fabsf(cu), fabsf(cv)); break;                         // concentric squares
+    case 1:  d = fabsf(cu) + fabsf(cv); break;                               // concentric diamonds
+    default: d = sqrtf(cu * cu + cv * cv); break;                            // concentric rings
+    }
+    float inside = 1.0f - smoothstepf(0.40f, 0.44f, d);                      // the engraving stops before the cell edge
+    float groove = 1.0f - smoothstepf(0.0f, 0.08f, fabsf(fractf(d * 6.0f) - 0.5f) - 0.14f);
+    float cross = 1.0f - smoothstepf(0.0f, 0.03f, fminf(fabsf(cu), fabsf(cv)) - 0.01f);
+    return clamp01((groove * 0.9f + cross * 0.7f) * inside);
+}
+
+static C3 mat_cave(float u, float v) { return rough_rock(u, v, 201); }
+static C3 mat_cave_carved(float u, float v)
+{
+    C3 c = rough_rock(u, v, 201);
+    float g = carving(u, v, 211);
+    return mixc(mulc(c, 1.12f), mulc(c, 0.18f), g); // dark where cut deep
+}
+static C3 ashlar(float u, float v, uint32_t s)
+{
+    int row = (int)floorf(v * 2.0f);
+    float bx = u * 2.0f + 0.5f * (float)(row & 1), fx = fractf(bx), fy = fractf(v * 2.0f);
+    float edge = minf2(minf2(fx, 1.0f - fx), minf2(fy, 1.0f - fy));
+    int col = (int)floorf(bx);
+    C3 c = mulc(c3(0.52f, 0.50f, 0.47f), (0.8f + 0.35f * rnd01(((col % 2) + 2) % 2, row & 1, s)) * (0.75f + 0.5f * fbm(u, v, 8, 4, s + 1)));
+    float crack = 1.0f - smoothstepf(0.0f, 0.03f, fabsf(fbm(u, v, 6, 3, s + 2) - 0.5f));
+    c = mulc(c, 1.0f - 0.55f * crack);
+    return mixc(c, c3(0.06f, 0.06f, 0.07f), 1.0f - smoothstepf(0.02f, 0.05f, edge)); // deep joints
+}
+static C3 mat_ashlar(float u, float v) { return ashlar(u, v, 221); }
+static C3 mat_ashlar_carved(float u, float v)
+{
+    C3 c = ashlar(u, v, 221);
+    return mixc(c, mulc(c, 0.2f), carving(u, v, 231));
+}
+
 typedef struct {
     const char *name;
     MatFn a, b;
@@ -816,6 +869,8 @@ static const BuiltinDef BUILTINS[] = {
     { "wood",      mat_oak,    mat_walnut,     0.04f, 0.50f, 0.50f },
     { "marble",    mat_marble_white, mat_marble_black, 0.12f, 0.80f, 0.45f },
     { "ice",       mat_frost,  mat_glacier,    0.10f, 0.80f, 0.45f },
+    { "cave",      mat_cave,   mat_cave_carved, 0.06f, 0.40f, 0.50f },
+    { "stone",     mat_ashlar, mat_ashlar_carved, 0.05f, 0.40f, 0.50f },
 };
 #define N_BUILTINS ((int)(sizeof BUILTINS / sizeof *BUILTINS))
 
@@ -830,15 +885,18 @@ int tileset_is_builtin(const char *name) { return find_builtin(name) != NULL; }
 
 const char *tileset_builtin_names(void)
 {
-    return "clouds, sunset, grass, shore, lava, snow, moss, plaster, stripes, damask, wood, marble, ice";
+    return "clouds, sunset, grass, shore, lava, snow, moss, plaster, stripes, damask, wood, marble, ice, cave, stone";
 }
 
-int tileset_builtin(const char *name, Tileset *out)
+int tileset_builtin(const char *name, Tileset *out) { return tileset_builtin_px(name, WANG_TILE_PX, out); }
+
+int tileset_builtin_px(const char *name, int tile_px, Tileset *out)
 {
     const BuiltinDef *d = find_builtin(name);
     memset(out, 0, sizeof *out);
     if (!d) return wang_fail("Unknown built-in texture '%s'", name);
-    const int n = WANG_TILE_PX;
+    if (tile_px < 16 || tile_px > 256) return wang_fail("Texture detail must be 16..256 pixels per tile for %s", name);
+    const int n = tile_px;
     out->px = malloc((size_t)16 * n * n * sizeof *out->px);
     if (!out->px) return wang_fail("Out of memory generating %s", name);
     out->matching = TS_MATCH_CORNER;

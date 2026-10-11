@@ -10,6 +10,7 @@
   #hud { position: fixed; top: 10px; left: 10px; background: rgba(16,20,26,.8); padding: 8px 12px; border-radius: 6px; line-height: 1.5; max-width: 320px; }
   #hud button { font: inherit; margin: 4px 0; }
   #hud label { display: block; cursor: pointer; }
+  [hidden] { display: none !important; }
   #info { opacity: .7; font-variant-numeric: tabular-nums; }
   #goal { color: #ffd54a; }
   #msg { position: fixed; inset: 0; display: none; place-items: center; text-align: center; padding: 24px; pointer-events: none; }
@@ -24,6 +25,7 @@
   <label><input type="checkbox" id="walls" checked> Show walls (H)</label>
   <label><input type="checkbox" id="props" checked> Show props &amp; lights (P)</label>
   <label><input type="checkbox" id="collide" checked> Walls block you (N = walk through)</label>
+  <label><input type="checkbox" id="lantern" checked> Lantern while walking (L)</label>
   <label id="ceilingRow" hidden><input type="checkbox" id="ceiling"> Show ceiling in orbit view (C)</label>
   <div id="goal"></div>
   <div id="info"></div>
@@ -66,6 +68,7 @@ const EYE = 0.3;      // eye height in walk mode; walls default to 0.6
 const WALK_SPEED = 2; // cells per second
 const LOOK_SPEED = 1.8; // radians per second for the arrow keys
 const NEAR_LIGHTS = 8;
+const BUMP_BOOST = 6; // the relief map is a height map; this makes the carving read clearly under the lights
 const keys = new Set();
 let mode = 'orbit';   // 'orbit' | 'walk'
 let yaw = 0, pitch = 0;
@@ -79,7 +82,7 @@ let skyMesh = null;   // dome of clouds, when the world has a sky texture
 
 const $ = (id) => document.getElementById(id);
 const modeEl = $('mode'), infoEl = $('info'), goalEl = $('goal'), walkBtn = $('walk');
-const wallsBox = $('walls'), propsBox = $('props'), ceilingBox = $('ceiling'), collideBox = $('collide');
+const wallsBox = $('walls'), propsBox = $('props'), ceilingBox = $('ceiling'), collideBox = $('collide'), lanternBox = $('lantern');
 
 function showMessage(text) {
   const m = $('msg');
@@ -152,6 +155,9 @@ const lightPool = Array.from({ length: NEAR_LIGHTS }, () => {
   scene.add(l);
   return l;
 });
+// Your lantern: it lights the walls beside you at a grazing angle, which is what makes carved relief visible.
+const lantern = new THREE.PointLight(0xffe3b0, 0, 6, 1); // gentle falloff: no hot spot on a wall right next to you
+scene.add(lantern);
 let lightTimer = 0;
 function updateNearLights() {
   const ls = world && world.lights;
@@ -276,6 +282,7 @@ fetch(jsonUrl, { cache: 'no-cache' }).then((r) => (r.ok ? r.json() : null)).catc
       if (['glow', 'flame', 'start', 'goal'].includes(name)) { m.emissive = m.color.clone(); m.emissiveIntensity = 1.0; }
       if (name === 'crystal') { m.emissive = m.color.clone(); m.emissiveIntensity = 0.35; }
       if (name === 'water') m.depthWrite = false;
+      if (m.bumpMap) m.bumpScale = (m.bumpScale || 1) * BUMP_BOOST;
     }
     mats = materials.materials;
     applyVisibility();
@@ -348,6 +355,7 @@ addEventListener('keydown', (e) => {
     if (e.code === 'KeyH') { flip(wallsBox); return; }
     if (e.code === 'KeyP') { flip(propsBox); return; }
     if (e.code === 'KeyN') { collideBox.checked = !collideBox.checked; return; }
+    if (e.code === 'KeyL') { lanternBox.checked = !lanternBox.checked; return; }
     if (e.code === 'KeyC' && !$('ceilingRow').hidden) { flip(ceilingBox); return; }
   }
   keys.add(e.code);
@@ -415,6 +423,11 @@ renderer.setAnimationLoop(() => {
     skyMesh.position.copy(camera.position);       // the sky stays put relative to the viewer
     skyMesh.material.map.offset.x += dt * 0.004;  // and the clouds drift
   }
+
+  // Held a little behind and above the eyes, so a wall beside you is lit at a grazing angle rather than head-on.
+  camera.getWorldDirection(forward);
+  lantern.position.copy(camera.position).addScaledVector(forward, -0.35).add(new THREE.Vector3(0, 0.12, 0));
+  lantern.intensity = mode === 'walk' && lanternBox.checked ? 1.6 : 0;
 
   lightTimer -= dt;
   if (lightTimer <= 0) { updateNearLights(); lightTimer = 0.15; }

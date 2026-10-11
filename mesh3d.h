@@ -13,6 +13,8 @@ typedef struct {
     float terrain_step;     // default 0.15
     const char *texture;    // atlas image file name for the floor (mtl map_Kd), or NULL for a flat colour
     const char *wall_texture; // wall image file name (also used for cliffs and, by default, the ceiling), or NULL
+    const char *wall_bump;  // relief (bump) map for the walls and cliffs, or NULL
+    float bump_strength;    // how deep the relief looks (mtl -bm), default 1
     const char *ceiling_texture; // ceiling image file name, or NULL to reuse the wall texture
     float wall_period;      // > 0: the wall texture repeats every this many world units (default: every 1)
     float ceiling_period;   // same for the ceiling (0 = like the walls)

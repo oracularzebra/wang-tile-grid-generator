@@ -36,6 +36,9 @@ static void usage(const char *prog)
         "                      texture the 3D world's surfaces from S (a built-in name or a tileset path);\n"
         "                      the sky is drawn as clouds by the viewer\n"
         "  --texture-cells N   tiles per side of these textures (default 8)\n"
+        "  --texture-px N      pixels per tile of built-in textures (default 64, walls 128)\n"
+        "  --relief F          depth of the wall relief (bump map made from the wall picture), 0..4; default: 1 for\n"
+        "                      the cave and stone textures, a little for the dungeon and desert themes, else 0\n"
         "3D world\n"
         "  --obj FILE          export a 3D world: FILE (.obj), .mtl, _atlas.png, _wall.png and .json\n"
         "  --theme NAME        %s (default classic)\n"
@@ -128,6 +131,17 @@ int main(int argc, char **argv)
         else if (!strcmp(a, "--ceiling-texture")) world.ceiling_texture = val;
         else if (!strcmp(a, "--floor-texture")) world.floor_texture = val;
         else if (!strcmp(a, "--sky-texture")) world.sky_texture = val;
+        else if (!strcmp(a, "--texture-px")) {
+            unsigned long n;
+            if (parse_uint(val, 256, &n) || n < 16) { fprintf(stderr, "Bad --texture-px '%s' (16..256)\n", val); return 2; }
+            world.texture_px = (int)n;
+        }
+        else if (!strcmp(a, "--relief")) {
+            if (parse_float(val, &world.relief) || world.relief < 0.0f || world.relief > 4.0f) {
+                fprintf(stderr, "Bad --relief '%s' (0..4)\n", val);
+                return 2;
+            }
+        }
         else if (!strcmp(a, "--texture-cells")) {
             unsigned long n;
             if (parse_uint(val, 32, &n) || n < 1) { fprintf(stderr, "Bad --texture-cells '%s' (1..32)\n", val); return 2; }

@@ -77,9 +77,11 @@ seamlessly:
 | `shore` | sand / water | `wood` | oak / walnut planks |
 | `lava` | basalt / lava | `marble` | white / black marble |
 | `snow` | rock / snow | `ice` | frost / glacier ice |
-| `moss` | stone slabs / moss | | |
+| `moss` | stone slabs / moss | `cave` | rough cave rock / rock with carved engravings |
+| | | `stone` | ashlar blocks / blocks with carved panels |
 
-`--list-textures` prints them. The same specs texture a 3D world: `--wall-texture`, `--ceiling-texture`,
+`cave` and `stone` are made for walls: the engravings (concentric squares, diamonds and rings) are cut deep, so
+with a relief map they read as real depth (see below). `--list-textures` prints them. The same specs texture a 3D world: `--wall-texture`, `--ceiling-texture`,
 `--floor-texture` (replaces the maze-path floor by one continuous texture) and `--sky-texture` (clouds drift
 across a sky dome in the viewer). `--texture-cells N` sets how many tiles one repeat covers (default 8).
 
@@ -94,6 +96,18 @@ shared edges, so every wall is emitted exactly once and the whole grid is one co
 The export writes `world.obj`, `world.mtl`, `world_atlas.png` (the floor tiles), `world.json` (sky, fog, lights,
 start and goal for the viewer) and, depending on the options, `world_wall.png`, `_ceiling.png`, `_floor.png`
 and `_sky.png`. Keep them together. Each floor cell uses its own atlas tile, so the export works for any grid size.
+
+### Carved stone walls (relief)
+```
+./wang_cli --theme dungeon --wall-texture cave --ceiling --out my.png --obj cave.obj
+./wang_cli --wall-texture stone --relief 2 --out my.png --obj stone.obj
+```
+Every wall texture can come with a **relief (bump) map** (`world_wall_bump.png`, written into the material as
+`map_Bump`), made from the brightness of the wall picture: dark grooves and cracks become low, lit surfaces high.
+Under torchlight, your lantern or the sun the grooves catch the light, so the carvings look cut into the stone.
+`--relief F` sets the depth (0 off, default 1 for `cave` and `stone`, a light 0.6 for the dungeon and desert
+themes, 0 otherwise; it also works on your own tilesets). Walls are drawn from 128px-per-tile textures;
+`--texture-px N` (16..256) changes that. The relief is shading, not real geometry, so the wall outline stays flat.
 
 ### Themes
 `--theme NAME` gives a look, with generated textures, props and lights:
@@ -116,10 +130,10 @@ friends override a theme's own textures.
 python3 -m http.server 8000
 # open http://localhost:8000/viewer/index.html   (loads ../world.obj; or ?obj=path/to/file.obj)
 ```
-Drag to orbit, scroll to zoom. Untick "Show walls" (H) to see the floor pattern, "Show props & lights" (P), and
+Drag to orbit, scroll to zoom. A **World** dropdown (after `make worlds`) switches between ready-made worlds. Untick "Show walls" (H) to see the floor pattern, "Show props & lights" (P), and
 "Show ceiling in orbit view" (C). W A S D move you in both modes, and the arrow keys look around like the mouse (turn and tilt while walking, orbit while in the orbit view). "Walk inside the maze" starts at
 the start pad facing the goal (drag to look, or move the mouse when the browser grants pointer lock; Esc to
-leave); the ceiling is always shown while walking. The nearest torches, crystals and pylons light the scene.
+leave); the ceiling is always shown while walking, and a lantern lights the walls next to you (L to switch it off). The nearest torches, crystals and pylons light the scene.
 Walls block you (untick "Walls block you", or press N, to walk through them); in `--terrain` worlds your eyes follow the floor up and down.
 
 This is a 2.5D extrusion of 2D Wang tiles, not true Wang cubes (matching on all six faces of a 3D lattice).

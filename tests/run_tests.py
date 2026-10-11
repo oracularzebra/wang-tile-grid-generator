@@ -407,7 +407,7 @@ def test_texture_edges(tmp):
 # ---------------------------------------------------------------- tilesets and textures
 
 BUILTIN_TEXTURES = ["clouds", "sunset", "grass", "shore", "lava", "snow", "moss", "plaster", "stripes", "damask",
-                    "wood", "marble", "ice"]
+                    "wood", "marble", "ice", "cave", "stone"]
 ARRANGED = [12, 13, 8, 9, 15, 14, 11, 10, 0, 1, 4, 5, 3, 2, 7, 6]   # source_pos by id for "arranged" 4x4 sheets
 IDENTITY = list(range(16))
 
@@ -587,6 +587,62 @@ def test_world_textures(tmp):
     check(0 < len(rects) <= 16, f"the corner floor uses the tileset's atlas tiles ({len(rects)} distinct)")
 
 
+def test_relief(tmp):
+    def world(name, *args):
+        obj = os.path.join(tmp, name + ".obj")
+        run("--size", "8x6", "--seed", "3", "--out", os.path.join(tmp, name + ".png"), "--obj", obj, *args)
+        return obj, parse_mtl(obj[:-4] + ".mtl")
+
+    obj, mtl = world("rel_cave", "--wall-texture", "cave", "--texture-cells", "4")
+    bump = os.path.join(tmp, "rel_cave_wall_bump.png")
+    check(mtl["wall"].get("map_Bump") == ["-bm", "1", "rel_cave_wall_bump.png"] and os.path.exists(bump) and
+          mtl["cliff"].get("map_Bump") == ["-bm", "1", "rel_cave_wall_bump.png"],
+          "cave walls get a relief map (map_Bump) written next to the obj")
+
+    _, mtl = world("rel_off", "--wall-texture", "cave", "--relief", "0")
+    check("map_Bump" not in mtl["wall"], "--relief 0 turns the relief off")
+    _, mtl = world("rel_strong", "--wall-texture", "stone", "--relief", "2.5")
+    check(mtl["wall"].get("map_Bump", [None, None])[:2] == ["-bm", "2.5"], "--relief sets the depth")
+    _, mtl = world("rel_dungeon", "--theme", "dungeon")
+    check("map_Bump" in mtl["wall"], "the dungeon theme's brick walls get a light relief by default")
+    _, mtl = world("rel_hedge", "--theme", "hedge")
+    check("map_Bump" not in mtl["wall"], "other themes have none unless asked for")
+    _, mtl = world("rel_classic")
+    check("map_Bump" not in mtl["wall"], "classic walls have none")
+    _, mtl = world("rel_user", "--wall-texture", os.path.join(ROOT, "assets", "maze2"), "--relief", "1")
+    check("map_Bump" in mtl["wall"], "relief can be made from your own tileset")
+
+    p = run("--relief", "9", ok=False)
+    check(p.returncode == 2, "--relief above 4 is rejected")
+
+    # detail
+    run("--make-texture", "cave", "--texture-out", os.path.join(tmp, "px32.png"), "--texture-cells", "4", "--texture-px", "32")
+    try:
+        from PIL import Image
+    except ImportError:
+        print("skip relief image checks (Pillow not installed)")
+        return
+    check(Image.open(os.path.join(tmp, "px32.png")).size == (128, 128), "--texture-px sets the tile size (4 cells of 32px = 128px)")
+    wall = Image.open(os.path.join(tmp, "rel_cave_wall.png")).convert("RGB")
+    check(wall.size == (512, 512), "wall textures default to 128px per tile")
+    b = Image.open(bump).convert("L")
+    check(b.size == wall.size, "the relief map is as large as the wall texture")
+    # the relief is brightness: dark grooves low, light surfaces high
+    lum = wall.convert("L")
+    a, c = list(lum.getdata()), list(b.getdata())
+    n = len(a)
+    ma, mc = sum(a) / n, sum(c) / n
+    cov = sum((x - ma) * (y - mc) for x, y in zip(a, c)) / n
+    corr = cov / ((sum((x - ma) ** 2 for x in a) / n) ** 0.5 * (sum((y - mc) ** 2 for y in c) / n) ** 0.5)
+    check(corr > 0.9, f"relief follows the picture's brightness (correlation {corr:.2f})")
+    # and it wraps without a seam like the texture does
+    def step(p, q):
+        return abs(p - q)
+    seam = sum(step(b.getpixel((0, y)), b.getpixel((511, y))) for y in range(512)) / 512
+    inner = sum(step(b.getpixel((x, y)), b.getpixel((x + 1, y))) for x in range(100, 110) for y in range(512)) / 10 / 512
+    check(seam <= inner * 2 + 3, f"the relief map tiles without a seam ({seam:.1f} vs {inner:.1f})")
+
+
 def test_la():
     exe = os.path.join(tempfile.gettempdir(), "wang_la_test")
     subprocess.run(["gcc", "-Wall", "-Wextra", "-o", exe, os.path.join(ROOT, "tests", "la_test.c"), "-lm"], check=True)
@@ -608,6 +664,7 @@ with tempfile.TemporaryDirectory() as tmp:
     test_builtin_textures(tmp)
     test_user_tilesets(tmp)
     test_world_textures(tmp)
+    test_relief(tmp)
 test_la()
 
 print()
