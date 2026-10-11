@@ -43,20 +43,20 @@ Leaving the fields empty uses 10x10 and a random seed, and without an opened ima
 ## 3D worlds
 The edge bits become a maze: a set bit is an open passage, a clear bit is a wall. Because
 neighbours agree on shared edges, every wall is emitted exactly once and the whole grid is one
-consistent world. The floor is the rendered grid image.
+consistent world. Each floor cell is textured with its own tile from the atlas, so the Wang pattern is visible on the ground and the export works for any grid size (no giant grid image needed).
 
 ```
 ./wang_cli --size 30x20 --seed 5 --out grid.png --obj world.obj
 ./wang_cli --size 30x20 --seed 5 --out grid.png --obj world.obj --terrain   # floors rise with open edges
 ```
 Extra options: `--wall-height F` (default 0.6) and `--wall-thickness F` (default 0.1), in cell units.
-Open `world.obj` in Blender, Godot, etc. (keep the `.mtl` and the grid image next to it), or view it in the browser:
+The export writes three files: `world.obj`, `world.mtl` and `world_atlas.png`. Open `world.obj` in Blender, Godot, etc. (keep all three together), or view it in the browser:
 
 ```
 python3 -m http.server 8000
 # open http://localhost:8000/viewer/index.html   (loads ../world.obj; or ?obj=path/to/file.obj)
 ```
-Drag to orbit and scroll to zoom. W A S D (or the arrow keys) move in both modes. Press "Walk inside the maze" for first-person: drag to look (or move the mouse if the browser grants pointer lock), Esc to leave. There is no wall collision yet.
+Drag to orbit and scroll to zoom. Untick "Show walls" (or press H) to hide the walls and see the tile pattern on the floor. W A S D (or the arrow keys) move in both modes. Press "Walk inside the maze" for first-person: drag to look (or move the mouse if the browser grants pointer lock), Esc to leave. There is no wall collision yet.
 
 This is a 2.5D extrusion of 2D Wang tiles, not true Wang cubes (matching on all six faces of a 3D lattice).
 

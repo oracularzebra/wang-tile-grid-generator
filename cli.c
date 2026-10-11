@@ -143,19 +143,24 @@ int main(int argc, char **argv)
     } else if (!obj_path) {
         fprintf(stderr, "Error: grid too large to render to an image (max %d tiles)\n", WANG_MAX_RENDER_TL);
         return 1;
+    } else {
+        printf("grid image skipped: more than %d tiles (the 3D export does not need it)\n", WANG_MAX_RENDER_TL);
     }
 
     if (obj_path) {
+        // The floor samples the 256x256 atlas, so it works for grids too big to render as one image.
         char *mtl_path = replace_ext(obj_path, ".mtl");
-        if (!mtl_path) { fprintf(stderr, "Out of memory\n"); return 1; }
-        const char *slash = strrchr(out_path, '/');
-        mesh.texture = render_image ? (slash ? slash + 1 : out_path) : NULL; // keep the png next to the obj
-        if (wang_export_obj(tiles, w, h, obj_path, mtl_path, &mesh)) {
+        char *tex_path = replace_ext(obj_path, "_atlas.png");
+        if (!mtl_path || !tex_path) { fprintf(stderr, "Out of memory\n"); return 1; }
+        const char *slash = strrchr(tex_path, '/');
+        mesh.texture = slash ? slash + 1 : tex_path; // the png sits next to the obj
+        if (wang_atlas_save(atlas, tex_path) || wang_export_obj(tiles, w, h, obj_path, mtl_path, &mesh)) {
             fprintf(stderr, "Error: %s\n", wang_last_error());
             return 1;
         }
-        printf("wrote %s and %s\n", obj_path, mtl_path);
+        printf("wrote %s, %s and %s\n", obj_path, mtl_path, tex_path);
         free(mtl_path);
+        free(tex_path);
     }
 
     free(atlas);

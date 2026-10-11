@@ -275,7 +275,7 @@ static void submit_clicked(GtkWidget *widget, gpointer data) {
     gtk_widget_show_all(global_window);
 }
 
-// Writes the last grid as an OBJ plus a floor texture next to it.
+// Writes the last grid as an OBJ plus its atlas texture next to it.
 static void export_3d_clicked(GtkWidget *widget, gpointer data) {
     GtkWindow *parent = GTK_WINDOW(data);
     if (!last_tiles) {
@@ -296,18 +296,17 @@ static void export_3d_clicked(GtkWidget *widget, gpointer data) {
         char *stem = has_ext ? g_strndup(obj_path, strlen(obj_path) - 4) : g_strdup(obj_path);
         char *full_obj = has_ext ? g_strdup(obj_path) : g_strconcat(obj_path, ".obj", NULL);
         char *mtl_path = g_strconcat(stem, ".mtl", NULL);
-        char *tex_path = g_strconcat(stem, "_floor.png", NULL);
+        char *tex_path = g_strconcat(stem, "_atlas.png", NULL);
 
         Mesh3dOptions mesh = mesh3d_default_options();
         char *tex_name = g_path_get_basename(tex_path);
         mesh.texture = tex_name;
 
-        RGBA32 *px = wang_render_grid(last_tiles, last_w, last_h, last_atlas);
-        if (!px || wang_save_image(tex_path, px, last_w * WANG_TILE_PX, last_h * WANG_TILE_PX) != 0 ||
+        // The floor samples the atlas, so only the 256x256 atlas has to be saved next to the obj.
+        if (wang_atlas_save(last_atlas, tex_path) != 0 ||
             wang_export_obj(last_tiles, last_w, last_h, full_obj, mtl_path, &mesh) != 0) {
             show_error(parent, wang_last_error());
         }
-        free(px);
 
         g_free(tex_name);
         g_free(tex_path);

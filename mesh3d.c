@@ -157,16 +157,19 @@ int wang_export_obj(const BLTR *tiles, size_t w, size_t h,
     for (int i = 0; i < 5; ++i)
         fprintf(o.f, "vn %g %g %g\n", NORMALS[i][0], NORMALS[i][1], NORMALS[i][2]);
 
-    // Floor: one textured quad per cell.
+    // Floor: one quad per cell, textured with that cell's tile from the atlas.
     fprintf(o.f, "usemtl floor\n");
     for (size_t cy = 0; cy < h; ++cy) {
         for (size_t cx = 0; cx < w; ++cx) {
             float x0 = (float)cx, x1 = x0 + 1.0f, z0 = (float)cy, z1 = z0 + 1.0f;
             float y = cell_height(&g, cx, cy);
             float p[4][3] = {{x0,y,z0},{x0,y,z1},{x1,y,z1},{x1,y,z0}};
-            float u0 = x0 / (float)w, u1 = x1 / (float)w;
-            float v0 = 1.0f - z0 / (float)h, v1 = 1.0f - z1 / (float)h;
-            float uv[4][2] = {{u0,v0},{u0,v1},{u1,v1},{u1,v0}};
+            // UV rectangle of this cell's tile in the atlas, inset half a texel to avoid bleeding.
+            BLTR t = tiles[cy * w + cx];
+            const float inset = 0.5f / (float)WANG_ATLAS_PX, step = 1.0f / (float)WANG_ATLAS_TL;
+            float u0 = (float)(t % WANG_ATLAS_TL) * step + inset, u1 = u0 + step - 2.0f * inset;
+            float v_top = 1.0f - (float)(t / WANG_ATLAS_TL) * step - inset, v_bot = v_top - step + 2.0f * inset;
+            float uv[4][2] = {{u0,v_top},{u0,v_bot},{u1,v_bot},{u1,v_top}};
             quad(&o, DIR_PY, p, uv);
         }
     }

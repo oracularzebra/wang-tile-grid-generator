@@ -66,6 +66,8 @@ def test_large(tmp):
     t = os.path.join(tmp, "huge.txt")
     run("--size", "200x200", "--seed", "4", "--tiles-out", t, "--obj", obj)
     check(edges_match(read_tiles(t)), "200x200 (3D only, no image) matches")
+    check("map_Kd big_atlas.png" in open(os.path.join(tmp, "big.mtl")).read(),
+          "200x200 (too big for a grid image) still gets a textured floor")
     p = run("--size", "200x200", "--seed", "4", "--out", os.path.join(tmp, "x.png"), ok=False)
     check(p.returncode != 0, "200x200 image render is rejected cleanly, not a crash")
 
@@ -86,13 +88,15 @@ def test_atlas(tmp):
 
 
 def parse_obj(path):
-    verts, normals, faces, mat = [], [], [], None
+    verts, normals, faces, vts, mat = [], [], [], [], None
     for line in open(path):
         p = line.split()
         if not p:
             continue
         if p[0] == "v":
             verts.append(tuple(map(float, p[1:4])))
+        elif p[0] == "vt":
+            vts.append(tuple(map(float, p[1:3])))
         elif p[0] == "vn":
             normals.append(tuple(map(float, p[1:4])))
         elif p[0] == "usemtl":
@@ -100,7 +104,7 @@ def parse_obj(path):
         elif p[0] == "f":
             idx = [tuple(int(i) if i else 0 for i in tok.split("/")) for tok in p[1:]]
             faces.append((mat, idx))
-    return verts, normals, faces
+    return verts, normals, faces, vts
 
 
 def sub(a, b):
@@ -139,7 +143,7 @@ def test_obj(tmp):
         run("--size", "9x6", "--seed", "11", "--tiles-out", t, "--out", os.path.join(tmp, name + ".png"),
             "--obj", obj, *extra)
         g = read_tiles(t)
-        verts, normals, faces = parse_obj(obj)
+        verts, normals, faces, vts = parse_obj(obj)
         check(os.path.exists(os.path.join(tmp, name + ".mtl")), f"{name}: mtl written")
         check(len(normals) == 5, f"{name}: 5 shared normals")
 
@@ -158,6 +162,23 @@ def test_obj(tmp):
         floor = [f for f in faces if f[0] == "floor" and normals[f[1][0][2] - 1] == (0, 1, 0)]
         check(len(floor) == w * h and all(len(i) == 4 for _, i in floor) and all(i[0][1] for _, i in floor),
               f"{name}: one textured floor quad per cell")
+
+        # Each floor quad must sample exactly its own tile's rectangle of the 4x4 atlas.
+        bad_uv = 0
+        for _, idx in floor:
+            x0, _, z0 = verts[idx[0][0] - 1]
+            tile = g[int(round(z0))][int(round(x0))]
+            col, row = tile % 4, tile // 4
+            us = [vts[i[1] - 1][0] for i in idx]
+            vs_ = [vts[i[1] - 1][1] for i in idx]
+            ok = (col / 4 <= min(us) and max(us) <= (col + 1) / 4 and
+                  1 - (row + 1) / 4 <= min(vs_) and max(vs_) <= 1 - row / 4 and
+                  max(us) - min(us) > 0.24 and max(vs_) - min(vs_) > 0.24)
+            bad_uv += not ok
+        check(bad_uv == 0, f"{name}: every floor cell maps to its own atlas tile")
+        mtl = open(os.path.join(tmp, name + ".mtl")).read()
+        check(f"map_Kd {name}_atlas.png" in mtl and os.path.exists(os.path.join(tmp, name + "_atlas.png")),
+              f"{name}: mtl points at the atlas written next to the obj")
 
         hw, vw, posts = expected_walls(g)
         t_ = 0.1

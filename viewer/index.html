@@ -9,6 +9,7 @@
   canvas { display: block; outline: none; }
   #hud { position: fixed; top: 10px; left: 10px; background: rgba(16,20,26,.8); padding: 8px 12px; border-radius: 6px; line-height: 1.5; }
   #hud button { font: inherit; margin-top: 4px; }
+  #hud label { display: block; cursor: pointer; }
   #pos { opacity: .6; font-variant-numeric: tabular-nums; }
   #msg { position: fixed; inset: 0; display: none; place-items: center; text-align: center; padding: 24px; }
 </style>
@@ -18,6 +19,7 @@
   <div id="mode"></div>
   <div>W A S D / arrow keys move in both modes</div>
   <button id="walk">Walk inside the maze</button>
+  <label><input type="checkbox" id="walls" checked> Show walls (H)</label>
   <div id="pos"></div>
 </div>
 <div id="msg"></div>
@@ -61,10 +63,20 @@ let mode = 'orbit';   // 'orbit' | 'walk'
 let yaw = 0, pitch = 0;
 let bounds = new THREE.Box3();
 let saved = null;     // orbit camera state to restore when leaving walk mode
+let mazeMaterials = null; // materials from the .mtl, so walls can be hidden to show the floor pattern
 
 const modeEl = document.getElementById('mode');
 const posEl = document.getElementById('pos');
 const walkBtn = document.getElementById('walk');
+const wallsBox = document.getElementById('walls');
+
+function applyWallVisibility() {
+  if (!mazeMaterials) return;
+  for (const name of ['wall', 'cliff']) {
+    if (mazeMaterials[name]) mazeMaterials[name].visible = wallsBox.checked;
+  }
+}
+wallsBox.addEventListener('change', applyWallVisibility);
 
 function showMessage(text) {
   const m = document.getElementById('msg');
@@ -94,6 +106,8 @@ const mtlLoader = new MTLLoader();
 mtlLoader.load(mtlUrl, (materials) => {
   materials.preload();
   for (const m of Object.values(materials.materials)) m.side = THREE.DoubleSide;
+  mazeMaterials = materials.materials;
+  applyWallVisibility();
   const objLoader = new OBJLoader();
   objLoader.setMaterials(materials);
   objLoader.load(objUrl, (object) => { scene.add(object); frame(object); },
@@ -147,6 +161,7 @@ addEventListener('pointermove', (e) => {
 
 addEventListener('keydown', (e) => {
   if (e.code === 'Escape' && mode === 'walk') { leaveWalk(); return; }
+  if (e.code === 'KeyH' && !e.repeat) { wallsBox.checked = !wallsBox.checked; applyWallVisibility(); return; }
   keys.add(e.code);
 });
 addEventListener('keyup', (e) => keys.delete(e.code));
