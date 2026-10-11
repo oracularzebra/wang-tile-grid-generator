@@ -120,7 +120,7 @@ Drag to orbit, scroll to zoom. Untick "Show walls" (H) to see the floor pattern,
 "Show ceiling in orbit view" (C). W A S D move you in both modes, and the arrow keys look around like the mouse (turn and tilt while walking, orbit while in the orbit view). "Walk inside the maze" starts at
 the start pad facing the goal (drag to look, or move the mouse when the browser grants pointer lock; Esc to
 leave); the ceiling is always shown while walking. The nearest torches, crystals and pylons light the scene.
-There is no wall collision yet.
+Walls block you (untick "Walls block you", or press N, to walk through them); in `--terrain` worlds your eyes follow the floor up and down.
 
 This is a 2.5D extrusion of 2D Wang tiles, not true Wang cubes (matching on all six faces of a 3D lattice).
 

@@ -282,6 +282,8 @@ def test_themes(tmp):
 
         j = json.load(open(os.path.join(tmp, name + ".json")))
         check(j["theme"] == theme and j["size"] == {"w": w, "h": h}, f"{theme}: json describes the world")
+        check(j["tiles"] == ["".join("%x" % v for v in row) for row in g] and j["wall_thickness"] == 0.1,
+              f"{theme}: json carries the maze so the viewer can stop you at walls")
 
         # start/goal: both inside the maze, joined by a route of exactly path_len steps, and the goal is the far end
         (sx, sy), (gx, gy) = j["start"]["cell"], j["goal"]["cell"]

@@ -17,11 +17,13 @@
 </head>
 <body>
 <div id="hud">
+  <label id="worldRow" hidden>World: <select id="worldSel"></select></label>
   <div id="mode"></div>
   <div>W A S D move &middot; arrow keys look around (like the mouse)</div>
   <button id="walk">Walk inside the maze</button>
   <label><input type="checkbox" id="walls" checked> Show walls (H)</label>
   <label><input type="checkbox" id="props" checked> Show props &amp; lights (P)</label>
+  <label><input type="checkbox" id="collide" checked> Walls block you (N = walk through)</label>
   <label id="ceilingRow" hidden><input type="checkbox" id="ceiling"> Show ceiling in orbit view (C)</label>
   <div id="goal"></div>
   <div id="info"></div>
@@ -77,13 +79,29 @@ let skyMesh = null;   // dome of clouds, when the world has a sky texture
 
 const $ = (id) => document.getElementById(id);
 const modeEl = $('mode'), infoEl = $('info'), goalEl = $('goal'), walkBtn = $('walk');
-const wallsBox = $('walls'), propsBox = $('props'), ceilingBox = $('ceiling');
+const wallsBox = $('walls'), propsBox = $('props'), ceilingBox = $('ceiling'), collideBox = $('collide');
 
 function showMessage(text) {
   const m = $('msg');
   m.textContent = text;
   m.style.display = 'grid';
 }
+
+// A "World" dropdown, when worlds/index.json exists (made by `make worlds`).
+fetch('../worlds/index.json', { cache: 'no-cache' }).then((r) => (r.ok ? r.json() : null)).catch(() => null).then((list) => {
+  if (!list || !list.length) return;
+  const sel = $('worldSel');
+  for (const w of list) {
+    const o = document.createElement('option');
+    o.value = '../worlds/' + w.file;
+    o.textContent = w.name;
+    if (o.value === objUrl) o.selected = true;
+    sel.appendChild(o);
+  }
+  if (!list.some((w) => '../worlds/' + w.file === objUrl)) sel.insertBefore(new Option('(this file)', objUrl, true, true), sel.firstChild);
+  sel.addEventListener('change', () => { location.search = '?obj=' + encodeURIComponent(sel.value); sel.blur(); });
+  $('worldRow').hidden = false;
+});
 
 const css = (c) => `rgb(${c.map((v) => Math.round(v * 255)).join(',')})`;
 
@@ -119,6 +137,7 @@ function applyWorld(j) {
   document.body.style.background = `linear-gradient(${css(j.sky.top)}, ${css(j.sky.bottom)})`;
   if (j.fog && j.fog.density > 0) scene.fog = new THREE.FogExp2(new THREE.Color(...j.fog.color), j.fog.density);
   if (j.prop_materials) propMaterials = j.prop_materials;
+  buildMaze(j);
   if (j.sky_texture) loadSky(objUrl.slice(0, objUrl.lastIndexOf('/') + 1) + j.sky_texture);
   applyLighting();
   $('ceilingRow').hidden = !j.ceiling;
@@ -171,6 +190,72 @@ function loadSky(url) {
   }, undefined, () => console.warn('Could not load the sky texture', url));
 }
 
+// ---- walls you cannot walk through ----
+// The .json carries the maze (one hex digit per cell: right=1 top=2 left=4 bottom=8). A wall stands on every edge
+// that is not open on both sides, exactly as the exporter builds them.
+const PLAYER_RADIUS = 0.15;
+let maze = null; // { w, h, tiles: Uint8Array, half: wall thickness / 2, step: terrain step or 0 }
+
+function buildMaze(j) {
+  if (!j.tiles || !j.tiles.length) return;
+  const h = j.tiles.length, w = j.tiles[0].length;
+  const tiles = new Uint8Array(w * h);
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) tiles[y * w + x] = parseInt(j.tiles[y][x], 16);
+  maze = { w, h, tiles, half: (j.wall_thickness || 0.1) / 2, step: j.terrain ? (j.terrain_step || 0) : 0 };
+}
+
+const tileAt = (x, y) => maze.tiles[y * maze.w + x];
+const popcount = (n) => { let c = 0; while (n) { c += n & 1; n >>= 1; } return c; };
+
+// Edge on the line z=j covering x in [i,i+1], and edge on the line x=i covering z in [j,j+1].
+function hasHWall(j, i) {
+  const above = j > 0 && (tileAt(i, j - 1) & 8) !== 0, below = j < maze.h && (tileAt(i, j) & 2) !== 0;
+  return (j === 0 || j === maze.h) ? !(above || below) : !(above && below);
+}
+function hasVWall(j, i) {
+  const left = i > 0 && (tileAt(i - 1, j) & 1) !== 0, right = i < maze.w && (tileAt(i, j) & 4) !== 0;
+  return (i === 0 || i === maze.w) ? !(left || right) : !(left && right);
+}
+
+// Push a circle at (p.x, p.z) out of every wall box around it.
+function collideWalls(p) {
+  if (!maze || !collideBox.checked) return;
+  const t = maze.half, r = PLAYER_RADIUS;
+  for (let pass = 0; pass < 3; pass++) {
+    const cx = Math.floor(p.x), cz = Math.floor(p.z);
+    for (let j = cz - 1; j <= cz + 2; j++) {
+      for (let i = cx - 1; i <= cx + 2; i++) {
+        const boxes = [];
+        if (i >= 0 && i < maze.w && j >= 0 && j <= maze.h && hasHWall(j, i)) boxes.push([i - t, i + 1 + t, j - t, j + t]);
+        if (j >= 0 && j < maze.h && i >= 0 && i <= maze.w && hasVWall(j, i)) boxes.push([i - t, i + t, j - t, j + 1 + t]);
+        for (const [x0, x1, z0, z1] of boxes) {
+          const qx = Math.max(x0, Math.min(p.x, x1)), qz = Math.max(z0, Math.min(p.z, z1));
+          const dx = p.x - qx, dz = p.z - qz, d2 = dx * dx + dz * dz;
+          if (d2 >= r * r) continue;
+          if (d2 > 1e-12) {
+            const d = Math.sqrt(d2), push = r - d;
+            p.x += (dx / d) * push;
+            p.z += (dz / d) * push;
+          } else { // the centre is inside the box: leave by the nearest side
+            const left = p.x - x0, rightD = x1 - p.x, up = p.z - z0, down = z1 - p.z;
+            const m = Math.min(left, rightD, up, down);
+            if (m === left) p.x = x0 - r; else if (m === rightD) p.x = x1 + r;
+            else if (m === up) p.z = z0 - r; else p.z = z1 + r;
+          }
+        }
+      }
+    }
+  }
+}
+
+// Height of the floor under the player (cells rise with the number of open edges in terrain mode).
+function floorHeight(x, z) {
+  if (!maze || !maze.step) return 0;
+  const cx = Math.floor(x), cz = Math.floor(z);
+  if (cx < 0 || cz < 0 || cx >= maze.w || cz >= maze.h) return 0;
+  return popcount(tileAt(cx, cz)) * maze.step;
+}
+
 function frame(object) {
   bounds.setFromObject(object);
   const size = bounds.getSize(new THREE.Vector3());
@@ -182,7 +267,7 @@ function frame(object) {
 }
 
 // Load the optional .json first so the sky is right before the model appears.
-fetch(jsonUrl).then((r) => (r.ok ? r.json() : null)).catch(() => null).then((j) => {
+fetch(jsonUrl, { cache: 'no-cache' }).then((r) => (r.ok ? r.json() : null)).catch(() => null).then((j) => {
   if (j) applyWorld(j);
   new MTLLoader().load(mtlUrl, (materials) => {
     materials.preload();
@@ -213,7 +298,7 @@ function enterWalk() {
   goalReached = false;
   // Start pad if the world has one (facing the goal), otherwise the first cell facing into the maze.
   if (world && world.start && world.goal) {
-    camera.position.set(world.start.x, EYE, world.start.z);
+    camera.position.set(world.start.x, floorHeight(world.start.x, world.start.z) + EYE, world.start.z);
     yaw = Math.atan2(-(world.goal.x - world.start.x), -(world.goal.z - world.start.z));
   } else {
     camera.position.set(bounds.min.x + 0.5, EYE, bounds.min.z + 0.5);
@@ -262,6 +347,7 @@ addEventListener('keydown', (e) => {
   if (!e.repeat) {
     if (e.code === 'KeyH') { flip(wallsBox); return; }
     if (e.code === 'KeyP') { flip(propsBox); return; }
+    if (e.code === 'KeyN') { collideBox.checked = !collideBox.checked; return; }
     if (e.code === 'KeyC' && !$('ceilingRow').hidden) { flip(ceilingBox); return; }
   }
   keys.add(e.code);
@@ -313,11 +399,17 @@ renderer.setAnimationLoop(() => {
     const step = (mode === 'walk' ? WALK_SPEED : Math.max(1, camera.position.y) * 0.8) * dt;
     const move = forward.multiplyScalar(f * step).add(right.multiplyScalar(r * step));
     camera.position.add(move);
-    if (mode === 'orbit') orbit.target.add(move); // pan, so orbiting stays centred on the view
+    if (mode === 'walk') collideWalls(camera.position);
+    else orbit.target.add(move); // pan, so orbiting stays centred on the view
   }
 
-  if (mode === 'orbit') orbit.update();
-  else camera.position.y = EYE;
+  if (mode === 'orbit') {
+    orbit.update();
+  } else {
+    // Eye height follows the floor (terrain mode), easing so stepping up and down is not a jolt.
+    const want = floorHeight(camera.position.x, camera.position.z) + EYE;
+    camera.position.y += (want - camera.position.y) * Math.min(1, dt * 12);
+  }
 
   if (skyMesh) {
     skyMesh.position.copy(camera.position);       // the sky stays put relative to the viewer
@@ -335,6 +427,9 @@ renderer.setAnimationLoop(() => {
     text += `  ·  goal ${d.toFixed(1)} away`;
   }
   infoEl.dataset.pos = text;
+  // Exact values for automated tests (the readout above is rounded).
+  infoEl.dataset.x = camera.position.x; infoEl.dataset.y = camera.position.y; infoEl.dataset.z = camera.position.z;
+  infoEl.dataset.maze = maze ? `${maze.w}x${maze.h}` : 'none';
   infoEl.textContent = (world ? `${world.theme} · ${world.size.w}×${world.size.h}\n` : '') + text;
   infoEl.style.whiteSpace = 'pre-line';
   renderer.render(scene, camera);

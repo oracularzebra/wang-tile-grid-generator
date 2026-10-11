@@ -59,7 +59,7 @@ static void json_rgb(FILE *f, const float c[3])
 }
 
 static int write_json(const char *path, const Theme *th, size_t w, size_t h, const WorldOptions *opt,
-                      const Mesh3dInfo *info, const char *sky_file)
+                      const Mesh3dInfo *info, const char *sky_file, const BLTR *tiles)
 {
     // Used when there is no theme (classic look).
     static const float classic_sky[3] = {0.06f, 0.08f, 0.10f};
@@ -78,6 +78,15 @@ static int write_json(const char *path, const Theme *th, size_t w, size_t h, con
     else          fprintf(f, "  \"sky_texture\": null,\n");
     fprintf(f, "  \"ambient\": %g,\n  \"sun\": %g,\n", th ? th->ambient : 1.0f, th ? th->sun : 1.6f);
     fprintf(f, "  \"terrain\": %s,\n", opt->mesh.terrain ? "true" : "false");
+    fprintf(f, "  \"terrain_step\": %g,\n  \"wall_thickness\": %g,\n", opt->mesh.terrain_step, opt->mesh.wall_thickness);
+    // The maze itself (one hex digit per cell: right=1 top=2 left=4 bottom=8), so the viewer can stop you at walls.
+    fprintf(f, "  \"tiles\": [");
+    for (size_t y = 0; y < h; ++y) {
+        fprintf(f, "%s\n    \"", y ? "," : "");
+        for (size_t x = 0; x < w; ++x) fputc("0123456789abcdef"[tiles[y * w + x] & 15], f);
+        fputc('"', f);
+    }
+    fprintf(f, "\n  ],\n");
 
     if (info->has_ceiling) fprintf(f, "  \"ceiling\": {\"y\": %g},\n", info->ceiling_y);
     else                   fprintf(f, "  \"ceiling\": null,\n");
@@ -182,7 +191,7 @@ int wang_export_world(const BLTR *tiles, size_t w, size_t h, const RGBA32 *atlas
     m.seed = opt.seed;
 
     if (wang_export_obj(tiles, w, h, obj_path, mtl_path, &m, &info) != 0) goto done;
-    if (write_json(json_path, th, w, h, &opt, &info, sky_file) != 0) goto done;
+    if (write_json(json_path, th, w, h, &opt, &info, sky_file, tiles) != 0) goto done;
     printf("wrote %s, %s and %s\n", obj_path, mtl_path, json_path);
     printf("textures: floor %s, walls %s%s%s\n", m.texture, m.wall_texture ? m.wall_texture : "(flat colour)",
            m.ceiling_texture ? ", ceiling " : "", m.ceiling_texture ? m.ceiling_texture : "");
